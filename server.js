@@ -53,12 +53,12 @@ function initProjectChecklist(score = 60) {
 }
 
 let sites = [
-  { id:'P-2041', name:'Udaan Skill Centre (sample)', district:'Lucknow', state:'Uttar Pradesh', scheme:'SMILE', risk:'High', score:58, camera:'Live', status:'Live', attendance:62, lastInspection:'14 Aug 2026', lat:26.8467, lng:80.9462, inspectionAssigned:false, owner:'NGO/2026/1001', lastUpdated: new Date(Date.now() - 12 * 60 * 1000).toISOString() },
-  { id:'P-1872', name:'Saksham Residential Institute', district:'Jaipur', state:'Rajasthan', scheme:'PM-DAKSH', risk:'Medium', score:75, camera:'Live', status:'Live', attendance:84, lastInspection:'09 Aug 2026', lat:26.9124, lng:75.7873, inspectionAssigned:false, owner:'NGO/2026/1002', lastUpdated: new Date(Date.now() - 45 * 60 * 1000).toISOString() },
-  { id:'P-3108', name:'Nayi Disha Foundation', district:'Bhopal', state:'Madhya Pradesh', scheme:'NAMASTE', risk:'Low', score:88, camera:'Offline', status:'Closed', attendance:89, lastInspection:'18 Aug 2026', lat:23.2599, lng:77.4126, inspectionAssigned:false, owner:'NGO/2026/1003', lastUpdated: new Date(Date.now() - 3 * 3600 * 1000).toISOString() },
-  { id:'P-2234', name:'Aasha Rehabilitation Centre', district:'Patna', state:'Bihar', scheme:'SMILE', risk:'High', score:50, camera:'Live', status:'Live', attendance:57, lastInspection:'02 Aug 2026', lat:25.5941, lng:85.1376, inspectionAssigned:false, owner:'NGO/2026/1004', lastUpdated: new Date(Date.now() - 5 * 3600 * 1000).toISOString() },
-  { id:'P-1146', name:'Prerna Education Trust', district:'Kolkata', state:'West Bengal', scheme:'PM-DAKSH', risk:'Low', score:100, camera:'Live', status:'Live', attendance:93, lastInspection:'12 Aug 2026', lat:22.5726, lng:88.3639, inspectionAssigned:false, owner:'NGO/2026/1005', lastUpdated: new Date(Date.now() - 24 * 3600 * 1000).toISOString() },
-  { id:'P-4011', name:'Bengaluru Skill Academy', district:'Bengaluru', state:'Karnataka', scheme:'PM-DAKSH', risk:'Medium', score:63, camera:'Live', status:'Live', attendance:78, lastInspection:'10 Aug 2026', lat:12.9716, lng:77.5946, inspectionAssigned:false, owner:'NGO/2026/1006', lastUpdated: new Date(Date.now() - 2 * 3600 * 1000).toISOString() }
+  { id:'P-2041', name:'Udaan Skill Centre (sample)', district:'Lucknow', state:'Uttar Pradesh', scheme:'SMILE', risk:'High', score:58, camera:'Live', status:'Live', attendance:62, lastInspection:'14 Aug 2026', lat:26.8467, lng:80.9462, inspectionAssigned:false, owner:'NGO/2026/1001', assignedInspector:'Arjun Mehta', lastUpdated: new Date(Date.now() - 12 * 60 * 1000).toISOString() },
+  { id:'P-1872', name:'Saksham Residential Institute', district:'Jaipur', state:'Rajasthan', scheme:'PM-DAKSH', risk:'Medium', score:75, camera:'Live', status:'Live', attendance:84, lastInspection:'09 Aug 2026', lat:26.9124, lng:75.7873, inspectionAssigned:false, owner:'NGO/2026/1002', assignedInspector:'Vikram Singh', lastUpdated: new Date(Date.now() - 45 * 60 * 1000).toISOString() },
+  { id:'P-3108', name:'Nayi Disha Foundation', district:'Bhopal', state:'Madhya Pradesh', scheme:'NAMASTE', risk:'Low', score:88, camera:'Offline', status:'Closed', attendance:89, lastInspection:'18 Aug 2026', lat:23.2599, lng:77.4126, inspectionAssigned:false, owner:'NGO/2026/1003', assignedInspector:'Nisha Kapoor', lastUpdated: new Date(Date.now() - 3 * 3600 * 1000).toISOString() },
+  { id:'P-2234', name:'Aasha Rehabilitation Centre', district:'Patna', state:'Bihar', scheme:'SMILE', risk:'High', score:50, camera:'Live', status:'Live', attendance:57, lastInspection:'02 Aug 2026', lat:25.5941, lng:85.1376, inspectionAssigned:false, owner:'NGO/2026/1004', assignedInspector:'Arjun Mehta', lastUpdated: new Date(Date.now() - 5 * 3600 * 1000).toISOString() },
+  { id:'P-1146', name:'Prerna Education Trust', district:'Kolkata', state:'West Bengal', scheme:'PM-DAKSH', risk:'Low', score:100, camera:'Live', status:'Live', attendance:93, lastInspection:'12 Aug 2026', lat:22.5726, lng:88.3639, inspectionAssigned:false, owner:'NGO/2026/1005', assignedInspector:'Vikram Singh', lastUpdated: new Date(Date.now() - 24 * 3600 * 1000).toISOString() },
+  { id:'P-4011', name:'Bengaluru Skill Academy', district:'Bengaluru', state:'Karnataka', scheme:'PM-DAKSH', risk:'Medium', score:63, camera:'Live', status:'Live', attendance:78, lastInspection:'10 Aug 2026', lat:12.9716, lng:77.5946, inspectionAssigned:false, owner:'NGO/2026/1006', assignedInspector:'Meera Iyer', lastUpdated: new Date(Date.now() - 2 * 3600 * 1000).toISOString() }
 ];
 sites.forEach(s => { s.checklist = initProjectChecklist(s.score); });
 
@@ -278,6 +278,7 @@ const server = http.createServer(async (req,res) => {
         status: project.status || (project.camera === 'Offline' ? 'Closed' : 'Live'),
         score: project.score,
         lastUpdated: project.lastUpdated || new Date().toISOString(),
+        assignedInspector: project.assignedInspector || 'Arjun Mehta',
         checklist: project.checklist
       });
     }
@@ -285,6 +286,7 @@ const server = http.createServer(async (req,res) => {
       const data = await body(req);
       if (data.checklist) project.checklist = data.checklist;
       if (typeof data.score === 'number') project.score = data.score;
+      if (data.assignedInspector) project.assignedInspector = data.assignedInspector;
       if (data.status) {
         project.status = data.status;
         project.camera = data.status === 'Closed' ? 'Offline' : 'Live';

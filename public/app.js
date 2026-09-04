@@ -10,7 +10,7 @@ const evidencePreview=evidence=>{if(!evidence?.data)return '<span class="evidenc
 const showToast=m=>{const el=$('#toast');el.textContent=m;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3500)};
 const api=(url,options={})=>fetch(`${apiOrigin}${url}`,{...options,headers:{'Content-Type':'application/json',...(options.headers||{}),...(sessionStorage.saarthiToken?{Authorization:`Bearer ${sessionStorage.saarthiToken}`}:{})}});
 let dashboardFingerprint='';let dashboardSyncTimer=null;
-async function load(){const r=await api('/api/dashboard');if(r.status===401){delete sessionStorage.saarthiToken;showAuth();return}state.data=await r.json();dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats,logs:state.data.logs});if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';render()}
+async function load(){if(!sessionStorage.saarthiUser){sessionStorage.saarthiUser=JSON.stringify({name:'Arjun Mehta',employeeId:'GOV-2026-1001',role:'PMU Inspector'});}const r=await api('/api/dashboard');if(r.status===401){delete sessionStorage.saarthiToken;delete sessionStorage.saarthiUser;showAuth();return}state.data=await r.json();dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats,logs:state.data.logs});if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';render()}
 function startDashboardSync(){if(dashboardSyncTimer)return;dashboardSyncTimer=setInterval(async()=>{if(!sessionStorage.saarthiToken||state.view==='cctv')return;try{const r=await api('/api/dashboard',{cache:'no-store'});if(!r.ok)return;const next=await r.json(),fingerprint=JSON.stringify({sites:next.sites,inspections:next.inspections,stats:next.stats,logs:next.logs});if(fingerprint!==dashboardFingerprint){state.data=next;dashboardFingerprint=fingerprint;render();if(state.view!=='logs')showToast('Dashboard updated with the latest project information.')}}catch{}},5000)}
 function overview(){const d=state.data;return `<div class="stats"><div class="card"><div class="stat-label">Registered projects</div><div class="stat-value">${d.stats.monitored}</div><span class="trend">Live data from registered organisations</span></div><div class="card"><div class="stat-label">CCTV feeds live</div><div class="stat-value">${d.stats.live}<small style="font-size:13px;color:var(--muted)"> / ${d.stats.monitored}</small></div><span class="trend">Authorized field devices only</span></div><button class="card dashboard-link" data-view-go="inspections"><div class="stat-label">Open inspections</div><div class="stat-value">${d.stats.inspections}</div><span class="trend down">Open inspection workspace →</span></button><div class="card"><div class="stat-label">Average compliance</div><div class="stat-value">${d.stats.compliance}%</div><span class="trend">Calculated from registered projects</span></div></div><div class="grid"><div class="card"><div class="card-head"><h2>Project location map</h2><button class="text-btn" data-view-go="projects">View projects →</button></div><div id="india-project-map" class="real-map" aria-label="Map showing registered project locations"></div><div class="map-legend"><span class="map-high">●</span> High risk <span class="map-medium">●</span> Medium risk <span class="map-low">●</span> Low risk <span class="map-pending">●</span> Pending review</div></div><div class="card"><div class="card-head"><h2>Priority alerts</h2><button class="text-btn" data-view-go="reports">View all</button></div>${d.alerts.slice(0,3).map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${a.time}</time></div>`).join('')||'<div class="empty">No active alerts.</div>'}</div></div><div class="card section"><div class="card-head"><h2>Inspection queue</h2><button class="text-btn" data-view-go="inspections">Manage inspections →</button></div>${d.inspections.length?inspectionTable(d.inspections.slice(0,3)):'<div class="empty">No inspections are assigned. Create one from the Inspections page.</div>'}</div>`}
 function inspectionTable(items,showActions=false){return `<table class="table"><thead><tr><th>INSPECTION</th><th>ASSIGNED TO</th><th>WHEN</th><th>PRIORITY</th><th>STATUS</th>${showActions?'<th>ACTION</th>':''}</tr></thead><tbody>${items.map(i=>`<tr><td><strong>${esc(i.site)}</strong><br><small style="color:var(--muted)">${i.id}</small></td><td>${esc(i.inspector)}</td><td>${esc(i.due)}</td><td>${badge(i.priority)}</td><td>${badge(i.status)}</td>${showActions?`<td>${i.status==='Assigned'?`<button class="secondary start-ground" data-start-inspection="${esc(i.id)}">Start on ground</button>`:i.status==='In progress'?'<span class="ground-live">● On ground</span>':'<span class="report-ready">Report submitted</span>'}</td>`:''}</tr>`).join('')}</tbody></table>`}
@@ -58,9 +58,46 @@ function bindProjectCards(){
   });
 }
 
+function getCurrentUser(){
+  try {
+    if(sessionStorage.saarthiUser) return JSON.parse(sessionStorage.saarthiUser);
+  } catch(e){}
+  return { name: 'Arjun Mehta', role: 'PMU Inspector', employeeId: 'GOV-2026-1001' };
+}
+
+function isUserInspectorInCharge(project){
+  const user = getCurrentUser();
+  if(!user) return false;
+  if(user.role === 'Department Official') return true;
+  if(!project.assignedInspector) return true;
+  return (user.name || '').toLowerCase().trim() === (project.assignedInspector || '').toLowerCase().trim();
+}
+
+function normalizeCategoryWeights(cat){
+  if(!cat.items || cat.items.length === 0) return;
+  const targetCategoryWeight = 25.0;
+  const rawSum = cat.items.reduce((sum, it) => sum + (Number(it.weight) || 12.5), 0);
+  if(rawSum <= 0){
+    const equalWeight = Math.round((targetCategoryWeight / cat.items.length) * 10) / 10;
+    cat.items.forEach(it => { it.weight = equalWeight; });
+    return;
+  }
+  let assignedSum = 0;
+  cat.items.forEach(it => {
+    const raw = Number(it.weight) || 12.5;
+    it.weight = Math.round((targetCategoryWeight * raw / rawSum) * 10) / 10;
+    assignedSum += it.weight;
+  });
+  const diff = Math.round((targetCategoryWeight - assignedSum) * 10) / 10;
+  if(diff !== 0 && cat.items.length > 0){
+    cat.items[0].weight = Math.round((cat.items[0].weight + diff) * 10) / 10;
+  }
+}
+
 function openProjectDrawer(projectId){
   const project = state.data?.sites?.find(s=>s.id===projectId);
   if(!project) return showToast('Project details not found.');
+  if(!project.assignedInspector) project.assignedInspector = 'Arjun Mehta';
   if(!project.checklist){
     project.checklist = [
       { category:'Infrastructure', weight:25, items:[
@@ -96,25 +133,38 @@ function closeProjectDrawer(){
 function renderDrawerContent(project){
   const statusVal = project.status || (project.camera === 'Offline' ? 'Closed' : 'Live');
   const updatedText = formatRelativeOrDate(project.lastUpdated);
+  const isAuthorized = isUserInspectorInCharge(project);
+  const assignedInspector = project.assignedInspector || 'Arjun Mehta';
+
   let checklistHtml = '';
   project.checklist.forEach((cat, catIdx)=>{
     const catChecked = cat.items.filter(i=>i.checked).length;
-    checklistHtml += `<div class="checklist-cat">
+    checklistHtml += `<div class="checklist-cat" data-cat-idx="${catIdx}">
       <div class="checklist-cat-head">
         <span>${esc(cat.category)} (${catChecked}/${cat.items.length})</span>
-        <span class="cat-weight-pill">Weight: ${cat.weight}%</span>
+        <span class="cat-weight-pill">Category: ${cat.weight}%</span>
       </div>
       <div class="checklist-items">
         ${cat.items.map(item=>`
-          <label class="checklist-item ${item.checked?'checked':''}">
-            <input type="checkbox" class="chk-input" data-item-id="${esc(item.id)}" ${item.checked?'checked':''}>
-            <div class="chk-label">
-              <div>${esc(item.text)}</div>
-              <span class="item-weight">Item Weight: ${item.weight}%</span>
-            </div>
-          </label>
+          <div class="checklist-item ${item.checked?'checked':''}">
+            <input type="checkbox" id="chk-${esc(item.id)}" class="chk-input" data-item-id="${esc(item.id)}" ${item.checked?'checked':''}>
+            <label class="chk-label" for="chk-${esc(item.id)}">
+              <div class="chk-label-top">
+                <span>${esc(item.text)}</span>
+                ${item.custom ? `<span class="badge custom">Custom</span>` : ''}
+              </div>
+              <span class="item-weight">Weight: ${item.weight}%</span>
+            </label>
+            ${(item.custom && isAuthorized) ? `<button type="button" class="delete-custom-item-btn" data-cat-idx="${catIdx}" data-item-id="${esc(item.id)}" title="Delete custom item">🗑</button>` : ''}
+          </div>
         `).join('')}
       </div>
+      ${isAuthorized ? `
+        <div class="inline-form-slot" id="inline-form-slot-${catIdx}"></div>
+        <button type="button" class="add-custom-item-btn" data-cat-idx="${catIdx}">+ Add custom item to ${esc(cat.category)}</button>
+      ` : `
+        <div class="inspector-notice">Only assigned inspector in-charge (${esc(assignedInspector)}) can add custom items.</div>
+      `}
     </div>`;
   });
 
@@ -127,6 +177,7 @@ function renderDrawerContent(project){
           ${statusVal === 'Live' ? '● Live (Operational)' : '○ Closed (Offline)'} ⇄
         </button>
         <span class="badge info">${esc(project.scheme)}</span>
+        <span class="badge incharge ${isAuthorized ? 'mine' : ''}">Inspector: ${esc(assignedInspector)} ${isAuthorized ? '(In-Charge)' : ''}</span>
       </div>
       <h2 class="drawer-title">${esc(project.name)}</h2>
       <div class="drawer-meta">${esc(project.district)}, ${esc(project.state)} · ID: ${esc(project.id)}</div>
@@ -156,13 +207,246 @@ function renderDrawerContent(project){
         <button class="secondary" id="save-drawer-note" style="font-size:12px;padding:8px 14px">+ Add Inspector Note to Audit Log</button>
       </div>
     </div>
+    <div class="drawer-footer">
+      <button class="secondary" id="drawer-done-btn">Close details</button>
+    </div>
   `;
+
   $('#close-drawer').onclick = closeProjectDrawer;
+  const doneBtn = $('#drawer-done-btn');
+  if(doneBtn) doneBtn.onclick = closeProjectDrawer;
+
   document.querySelectorAll('#drawer-content .chk-input').forEach(chk=>{
     chk.onchange = (e) => handleChecklistToggle(project, e.target);
   });
   $('#toggle-proj-status').onclick = () => handleStatusToggle(project);
   $('#save-drawer-note').onclick = () => handleSaveInspectorNote(project);
+
+  // Bind Add Custom Item button triggers
+  document.querySelectorAll('#drawer-content .add-custom-item-btn').forEach(btn=>{
+    btn.onclick = () => {
+      const catIdx = parseInt(btn.dataset.catIdx, 10);
+      const slot = $(`#inline-form-slot-${catIdx}`);
+      if (!slot) return;
+      btn.style.display = 'none';
+      slot.innerHTML = `
+        <div class="inline-custom-form">
+          <label>Custom Inspection Item / Question</label>
+          <input type="text" class="custom-text-input" placeholder="e.g. Are accessibility ramps certified by local engineer?" />
+          <div class="form-row">
+            <div style="flex:1">
+              <label>Raw Weight Allocation (Option b proportional rescaling)</label>
+              <input type="number" class="custom-weight-input" value="10" min="1" max="50" step="0.5" />
+            </div>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="secondary cancel-custom-btn">Cancel</button>
+            <button type="button" class="primary save-custom-btn">Save custom item</button>
+          </div>
+        </div>
+      `;
+      const textInput = slot.querySelector('.custom-text-input');
+      if (textInput) textInput.focus();
+      slot.querySelector('.cancel-custom-btn').onclick = () => {
+        slot.innerHTML = '';
+        btn.style.display = '';
+      };
+      slot.querySelector('.save-custom-btn').onclick = () => {
+        const text = slot.querySelector('.custom-text-input').value.trim();
+        const rawWeight = parseFloat(slot.querySelector('.custom-weight-input').value) || 10;
+        if (!text) {
+          showToast('Please enter the custom item text.');
+          return;
+        }
+        handleAddCustomItem(project, catIdx, text, rawWeight);
+      };
+    };
+  });
+
+  // Bind Delete Custom Item buttons
+  document.querySelectorAll('#drawer-content .delete-custom-item-btn').forEach(delBtn=>{
+    delBtn.onclick = (e) => {
+      e.stopPropagation();
+      const catIdx = parseInt(delBtn.dataset.catIdx, 10);
+      const itemId = delBtn.dataset.itemId;
+      handleDeleteCustomItem(project, catIdx, itemId);
+    };
+  });
+}
+
+async function handleAddCustomItem(project, catIdx, text, rawWeight){
+  const cat = project.checklist[catIdx];
+  if(!cat) return;
+  const newItem = {
+    id: 'cst-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    text: text,
+    weight: rawWeight,
+    checked: false,
+    custom: true
+  };
+  cat.items.push(newItem);
+  normalizeCategoryWeights(cat);
+
+  const oldScore = project.score;
+  let totalWeights = 0, checkedWeights = 0;
+  project.checklist.forEach(c=>{
+    c.items.forEach(it=>{
+      const w = Number(it.weight) || 0;
+      totalWeights += w;
+      if(it.checked) checkedWeights += w;
+    });
+  });
+  const newScore = Math.round((checkedWeights / (totalWeights || 100)) * 100);
+  const delta = newScore - oldScore;
+  project.score = newScore;
+  project.lastUpdated = new Date().toISOString();
+
+  const user = getCurrentUser();
+  const actorName = `${user.name} (${user.role})`;
+  const addLog = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: project.lastUpdated,
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'checklist',
+    actor: actorName,
+    field: 'Custom Checklist Item Added',
+    oldValue: '',
+    newValue: text.slice(0, 45) + (text.length > 45 ? '…' : ''),
+    description: `Custom checklist item added in ${cat.category} by ${user.name}: "${text}" (weights proportionally rescaled to 25%)`
+  };
+  state.data.logs = state.data.logs || [];
+  state.data.logs.unshift(addLog);
+
+  if(delta !== 0){
+    const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
+    const scoreLog = {
+      id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+      timestamp: project.lastUpdated,
+      projectId: project.id,
+      projectName: project.name,
+      state: project.state,
+      actionType: 'score',
+      actor: actorName,
+      field: 'Compliance Score',
+      oldValue: `${oldScore}%`,
+      newValue: `${newScore}%`,
+      delta: deltaStr,
+      description: `Compliance score recalculated to ${newScore}% (${deltaStr}) following custom item addition`
+    };
+    state.data.logs.unshift(scoreLog);
+  }
+  if(state.view === 'logs') applyLogFilters();
+
+  renderDrawerContent(project);
+
+  const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
+  if(cardEl){
+    const cardScore = cardEl.querySelector('.card-score');
+    const cardProgress = cardEl.querySelector('.card-progress-bar');
+    if(cardScore) cardScore.textContent = `${newScore}%`;
+    if(cardProgress) cardProgress.style.width = `${newScore}%`;
+  }
+
+  showToast('Custom item added and category weights rescaled.');
+
+  try {
+    await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
+      method: 'PUT',
+      body: JSON.stringify({ checklist: project.checklist, score: project.score, logEntry: addLog })
+    });
+  } catch(e){
+    try { localStorage.setItem(`checklist_${project.id}`, JSON.stringify(project.checklist)); } catch{}
+  }
+}
+
+async function handleDeleteCustomItem(project, catIdx, itemId){
+  const cat = project.checklist[catIdx];
+  if(!cat) return;
+  const itemIndex = cat.items.findIndex(it => it.id === itemId);
+  if(itemIndex === -1) return;
+  const itemToDelete = cat.items[itemIndex];
+
+  if(!confirm(`Are you sure you want to delete this custom checklist item?\n\n"${itemToDelete.text}"`)){
+    return;
+  }
+
+  cat.items.splice(itemIndex, 1);
+  normalizeCategoryWeights(cat);
+
+  const oldScore = project.score;
+  let totalWeights = 0, checkedWeights = 0;
+  project.checklist.forEach(c=>{
+    c.items.forEach(it=>{
+      const w = Number(it.weight) || 0;
+      totalWeights += w;
+      if(it.checked) checkedWeights += w;
+    });
+  });
+  const newScore = Math.round((checkedWeights / (totalWeights || 100)) * 100);
+  const delta = newScore - oldScore;
+  project.score = newScore;
+  project.lastUpdated = new Date().toISOString();
+
+  const user = getCurrentUser();
+  const actorName = `${user.name} (${user.role})`;
+  const deleteLog = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: project.lastUpdated,
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'checklist',
+    actor: actorName,
+    field: 'Custom Checklist Item Deleted',
+    oldValue: itemToDelete.text.slice(0, 45) + (itemToDelete.text.length > 45 ? '…' : ''),
+    newValue: '',
+    description: `Custom checklist item deleted by ${user.name}: "${itemToDelete.text}" (weights re-normalized to 25%)`
+  };
+  state.data.logs = state.data.logs || [];
+  state.data.logs.unshift(deleteLog);
+
+  if(delta !== 0){
+    const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
+    const scoreLog = {
+      id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+      timestamp: project.lastUpdated,
+      projectId: project.id,
+      projectName: project.name,
+      state: project.state,
+      actionType: 'score',
+      actor: actorName,
+      field: 'Compliance Score',
+      oldValue: `${oldScore}%`,
+      newValue: `${newScore}%`,
+      delta: deltaStr,
+      description: `Compliance score recalculated to ${newScore}% (${deltaStr}) following custom item removal`
+    };
+    state.data.logs.unshift(scoreLog);
+  }
+  if(state.view === 'logs') applyLogFilters();
+
+  renderDrawerContent(project);
+
+  const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
+  if(cardEl){
+    const cardScore = cardEl.querySelector('.card-score');
+    const cardProgress = cardEl.querySelector('.card-progress-bar');
+    if(cardScore) cardScore.textContent = `${newScore}%`;
+    if(cardProgress) cardProgress.style.width = `${newScore}%`;
+  }
+
+  showToast('Custom item removed and category weights re-normalized.');
+
+  try {
+    await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
+      method: 'PUT',
+      body: JSON.stringify({ checklist: project.checklist, score: project.score, logEntry: deleteLog })
+    });
+  } catch(e){
+    try { localStorage.setItem(`checklist_${project.id}`, JSON.stringify(project.checklist)); } catch{}
+  }
 }
 
 async function handleChecklistToggle(project, checkbox){
@@ -172,9 +456,10 @@ async function handleChecklistToggle(project, checkbox){
   let targetItem = null, totalWeights = 0, checkedWeights = 0;
   project.checklist.forEach(cat=>{
     cat.items.forEach(item=>{
-      totalWeights += (item.weight || 12.5);
+      const w = Number(item.weight) || 0;
+      totalWeights += w;
       if(item.id === itemId){ item.checked = isChecked; targetItem = item; }
-      if(item.checked) checkedWeights += (item.weight || 12.5);
+      if(item.checked) checkedWeights += w;
     });
   });
   const oldScore = project.score;
@@ -208,8 +493,10 @@ async function handleChecklistToggle(project, checkbox){
   }
 
   // 3. Create Audit Log entries immediately for real-time feed
-  const actorName = sessionStorage.saarthiUser ? JSON.parse(sessionStorage.saarthiUser).name : 'Arjun Mehta (PMU Inspector)';
+  const user = getCurrentUser();
+  const actorName = `${user.name} (${user.role})`;
   const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
+  const isCustomBadge = targetItem?.custom ? ' [Custom Item]' : '';
   const checklistLog = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
     timestamp: project.lastUpdated,
@@ -218,10 +505,10 @@ async function handleChecklistToggle(project, checkbox){
     state: project.state,
     actionType: 'checklist',
     actor: actorName,
-    field: targetItem ? targetItem.text.slice(0, 45) + '…' : 'Checklist Item',
+    field: targetItem ? (targetItem.text.slice(0, 40) + '…' + isCustomBadge) : 'Checklist Item',
     oldValue: isChecked ? 'Unchecked' : 'Checked',
     newValue: isChecked ? 'Checked' : 'Unchecked',
-    description: `Checklist item ${isChecked ? 'verified' : 'unmarked'}: "${targetItem ? targetItem.text : ''}"`
+    description: `Checklist item ${isChecked ? 'verified' : 'unmarked'}${isCustomBadge}: "${targetItem ? targetItem.text : ''}"`
   };
   const scoreLog = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
@@ -534,7 +821,7 @@ const localAccounts=()=>JSON.parse(localStorage.getItem('saarthiLocalAccounts')|
 async function login(e){e.preventDefault();const data=Object.fromEntries(new FormData(e.target));const r=await api('/api/auth/login',{method:'POST',body:JSON.stringify(data)}),x=await r.json();if(r.status===404){const accounts=[{name:'Arjun Mehta',email:'arjun.mehta@dosje.gov.in',employeeId:'GOV-2026-1001',password:'Saarthi@2026',role:'PMU Inspector'},...localAccounts()];const user=accounts.find(a=>(a.email.toLowerCase()===data.identifier.toLowerCase()||a.employeeId===data.identifier.toUpperCase())&&a.password===data.password);return user?completeLogin({token:'local-'+crypto.randomUUID(),user:{name:user.name,employeeId:user.employeeId,role:user.role}}):authError('Employee ID/email or password is incorrect.')}if(!r.ok)return authError(x.error);completeLogin(x)}
 async function signup(e){e.preventDefault();const data=Object.fromEntries(new FormData(e.target));data.employeeId=data.employeeId.trim().toUpperCase().replace(/[ _]+/g,'-');if(!/^GOV-\d{4}-\d{4,}$/.test(data.employeeId))return authError('Use a valid Government Employee ID (for example GOV-2026-1001).');if(!/^[^@]+@(gov\.in|nic\.in|dosje\.gov\.in)$/.test(data.email.toLowerCase()))return authError('Use your authorized government email address.');if(data.password.length<8)return authError('Password must contain at least 8 characters.');const r=await api('/api/auth/signup',{method:'POST',body:JSON.stringify(data)}),x=await r.json();if(r.status===404)return authVerify(data.email,'123456',data);if(!r.ok)return authError(x.error);authVerify(data.email,x.demoCode,data)}
 const authVerify=(email,code,pending)=>{$('#auth-form').innerHTML=`<button class="back" id="go-signup">← Edit details</button><span class="auth-kicker">EMAIL VERIFICATION</span><h2>Enter your verification code</h2><p class="auth-muted">A six-digit code was sent to <b>${esc(email)}</b>.</p><form id="verify-form" class="auth-form"><label>Verification code<input name="code" inputmode="numeric" maxlength="6" placeholder="••••••" required></label><button class="auth-primary">Verify and continue</button></form><div class="demo-note">Prototype code: <b>${code}</b>. Production uses an approved NIC/DoSJE identity service.</div>`;$('#go-signup').onclick=authSignup;$('#verify-form').onsubmit=async e=>{e.preventDefault();const entered=new FormData(e.target).get('code');const r=await api('/api/auth/verify',{method:'POST',body:JSON.stringify({email,code:entered})}),x=await r.json();if(r.status===404){if(entered!=='123456')return authError('Invalid verification code.');const user={name:pending.name,email,employeeId:pending.employeeId.toUpperCase(),password:pending.password,role:'Department Official'};const users=localAccounts().filter(a=>a.email!==email);users.push(user);localStorage.setItem('saarthiLocalAccounts',JSON.stringify(users));return completeLogin({token:'local-'+crypto.randomUUID(),user})}if(!r.ok)return authError(x.error);completeLogin(x)}};
-function completeLogin(x){sessionStorage.saarthiToken=x.token;$('#auth-gate').remove();if(x.user.role==='Project / NGO Administrator'){showPartnerPortal(x.user);startPartnerEvidenceSync();return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
+function completeLogin(x){sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate').remove();if(x.user.role==='Project / NGO Administrator'){showPartnerPortal(x.user);startPartnerEvidenceSync();return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
 function showPartnerAuth(){showAuth();$('#auth-form').innerHTML=`<button class="back" id="back-portal">← Back to public portal</button><span class="auth-kicker">REGISTERED ORGANISATION ACCESS</span><h2>Project / NGO portal</h2><p class="auth-muted">Sign in to register a DoSJE scheme project and keep your project details current.</p><form id="partner-login-form" class="auth-form"><label>DoSJE registration ID or email<input name="identifier" placeholder="NGO/2026/1001 or organisation@email.org" required></label><label>Password<input name="password" type="password" placeholder="Enter your password" required></label><button class="auth-primary">Sign in to organisation portal</button></form><p class="auth-switch">New organisation? <button id="partner-signup">Register organisation</button></p>`;$('#partner-login-form').onsubmit=partnerLogin;$('#partner-signup').onclick=partnerSignup;$('#back-portal').onclick=()=>{$('#auth-gate').remove();showLanding()}}
 function partnerSignup(){$('#auth-form').innerHTML=`<button class="back" id="partner-login">← Back to organisation sign in</button><span class="auth-kicker">DOSJE ORGANISATION VERIFICATION</span><h2>Register your organisation</h2><p class="auth-muted">Use the organisation’s DoSJE registration ID and verified email.</p><form id="partner-signup-form" class="auth-form"><label>NGO / institute / project name<input name="organisation" placeholder="Registered organisation name" required></label><label>DoSJE registration ID<input name="registrationId" placeholder="NGO/2026/1001" required></label><label>Organisation email<input name="email" type="email" placeholder="organisation@email.org" required></label><label>Create password<input name="password" type="password" minlength="8" placeholder="Minimum 8 characters" required></label><button class="auth-primary">Send verification code</button></form>`;$('#partner-login').onclick=showPartnerAuth;$('#partner-signup-form').onsubmit=partnerRegister}
 async function partnerLogin(e){e.preventDefault();const data=Object.fromEntries(new FormData(e.target));const r=await api('/api/partner/login',{method:'POST',body:JSON.stringify(data)}),x=await r.json();if(!r.ok)return authError(x.error);completeLogin(x)}
