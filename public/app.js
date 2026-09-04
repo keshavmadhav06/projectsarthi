@@ -10,16 +10,452 @@ const evidencePreview=evidence=>{if(!evidence?.data)return '<span class="evidenc
 const showToast=m=>{const el=$('#toast');el.textContent=m;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3500)};
 const api=(url,options={})=>fetch(`${apiOrigin}${url}`,{...options,headers:{'Content-Type':'application/json',...(options.headers||{}),...(sessionStorage.saarthiToken?{Authorization:`Bearer ${sessionStorage.saarthiToken}`}:{})}});
 let dashboardFingerprint='';let dashboardSyncTimer=null;
-async function load(){const r=await api('/api/dashboard');if(r.status===401){delete sessionStorage.saarthiToken;showAuth();return}state.data=await r.json();dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats});if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';render()}
-function startDashboardSync(){if(dashboardSyncTimer)return;dashboardSyncTimer=setInterval(async()=>{if(!sessionStorage.saarthiToken||state.view==='cctv')return;try{const r=await api('/api/dashboard',{cache:'no-store'});if(!r.ok)return;const next=await r.json(),fingerprint=JSON.stringify({sites:next.sites,inspections:next.inspections,stats:next.stats});if(fingerprint!==dashboardFingerprint){state.data=next;dashboardFingerprint=fingerprint;render();showToast('Dashboard updated with the latest project information.')}}catch{}},5000)}
+async function load(){const r=await api('/api/dashboard');if(r.status===401){delete sessionStorage.saarthiToken;showAuth();return}state.data=await r.json();dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats,logs:state.data.logs});if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';render()}
+function startDashboardSync(){if(dashboardSyncTimer)return;dashboardSyncTimer=setInterval(async()=>{if(!sessionStorage.saarthiToken||state.view==='cctv')return;try{const r=await api('/api/dashboard',{cache:'no-store'});if(!r.ok)return;const next=await r.json(),fingerprint=JSON.stringify({sites:next.sites,inspections:next.inspections,stats:next.stats,logs:next.logs});if(fingerprint!==dashboardFingerprint){state.data=next;dashboardFingerprint=fingerprint;render();if(state.view!=='logs')showToast('Dashboard updated with the latest project information.')}}catch{}},5000)}
 function overview(){const d=state.data;return `<div class="stats"><div class="card"><div class="stat-label">Registered projects</div><div class="stat-value">${d.stats.monitored}</div><span class="trend">Live data from registered organisations</span></div><div class="card"><div class="stat-label">CCTV feeds live</div><div class="stat-value">${d.stats.live}<small style="font-size:13px;color:var(--muted)"> / ${d.stats.monitored}</small></div><span class="trend">Authorized field devices only</span></div><button class="card dashboard-link" data-view-go="inspections"><div class="stat-label">Open inspections</div><div class="stat-value">${d.stats.inspections}</div><span class="trend down">Open inspection workspace →</span></button><div class="card"><div class="stat-label">Average compliance</div><div class="stat-value">${d.stats.compliance}%</div><span class="trend">Calculated from registered projects</span></div></div><div class="grid"><div class="card"><div class="card-head"><h2>Project location map</h2><button class="text-btn" data-view-go="projects">View projects →</button></div><div id="india-project-map" class="real-map" aria-label="Map showing registered project locations"></div><div class="map-legend"><span class="map-high">●</span> High risk <span class="map-medium">●</span> Medium risk <span class="map-low">●</span> Low risk <span class="map-pending">●</span> Pending review</div></div><div class="card"><div class="card-head"><h2>Priority alerts</h2><button class="text-btn" data-view-go="reports">View all</button></div>${d.alerts.slice(0,3).map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${a.time}</time></div>`).join('')||'<div class="empty">No active alerts.</div>'}</div></div><div class="card section"><div class="card-head"><h2>Inspection queue</h2><button class="text-btn" data-view-go="inspections">Manage inspections →</button></div>${d.inspections.length?inspectionTable(d.inspections.slice(0,3)):'<div class="empty">No inspections are assigned. Create one from the Inspections page.</div>'}</div>`}
 function inspectionTable(items,showActions=false){return `<table class="table"><thead><tr><th>INSPECTION</th><th>ASSIGNED TO</th><th>WHEN</th><th>PRIORITY</th><th>STATUS</th>${showActions?'<th>ACTION</th>':''}</tr></thead><tbody>${items.map(i=>`<tr><td><strong>${esc(i.site)}</strong><br><small style="color:var(--muted)">${i.id}</small></td><td>${esc(i.inspector)}</td><td>${esc(i.due)}</td><td>${badge(i.priority)}</td><td>${badge(i.status)}</td>${showActions?`<td>${i.status==='Assigned'?`<button class="secondary start-ground" data-start-inspection="${esc(i.id)}">Start on ground</button>`:i.status==='In progress'?'<span class="ground-live">● On ground</span>':'<span class="report-ready">Report submitted</span>'}</td>`:''}</tr>`).join('')}</tbody></table>`}
 function projects(){const d=state.data;const states=[...new Set(d.sites.map(s=>s.state))].sort(),available=d.sites.filter(s=>!s.inspectionAssigned);return `<div class="project-toolbar"><div><span class="state-label">STATE / UT</span><select id="state-filter" class="state-filter"><option value="">All States & UTs</option>${states.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}</select></div><div id="state-summary" class="state-summary">${available.length} projects available for inspection</div></div><input class="filter" id="search" placeholder="Search within selected state by project, district, or scheme…"><div class="project-grid" id="projects-grid">${projectCards(available)}</div>`}
-function projectCards(sites){return sites.map(s=>`<article class="card project-card"><div class="card-head"><span>${badge(s.risk)}</span>${badge(s.camera)}</div><h3>${esc(s.name)}</h3><div class="meta">${esc(s.scheme)} · ${esc(s.district)}, ${esc(s.state)}</div><div class="project-row"><span>Compliance score</span><b>${s.score}%</b></div><div class="progress" style="margin:8px 0 16px"><i style="width:${s.score}%"></i></div><div class="project-row"><small style="color:var(--muted)">Attendance: ${s.attendance}%</small><span class="project-action-note">Schedule from Inspections</span></div></article>`).join('')}
+function formatRelativeOrDate(ts){
+  if(!ts) return 'Just now';
+  const d = new Date(ts);
+  if(isNaN(d.getTime())) return 'Recently';
+  const diffSec = Math.floor((Date.now() - d.getTime())/1000);
+  if(diffSec < 60) return 'Just now';
+  if(diffSec < 3600) return `${Math.floor(diffSec/60)} min ago`;
+  if(diffSec < 86400) return `${Math.floor(diffSec/3600)} hr ago`;
+  return d.toLocaleDateString('en-IN', { day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
+}
+
+function projectCards(sites){
+  return sites.map(s=>{
+    const statusVal = s.status || (s.camera === 'Offline' ? 'Closed' : 'Live');
+    return `<article class="card project-card" data-project-id="${esc(s.id)}" tabindex="0" role="button" aria-label="Open details for ${esc(s.name)}">
+      <div class="card-head">
+        <span>${badge(s.risk)}</span>
+        <span class="badge ${statusVal.toLowerCase()}">${statusVal === 'Live' ? '● Live' : '○ Closed'}</span>
+      </div>
+      <h3>${esc(s.name)}</h3>
+      <div class="meta">${esc(s.scheme)} · ${esc(s.district)}, ${esc(s.state)}</div>
+      <div class="project-row">
+        <span>Compliance score</span>
+        <b class="card-score">${s.score}%</b>
+      </div>
+      <div class="progress" style="margin:8px 0 16px">
+        <i class="card-progress-bar" style="width:${s.score}%"></i>
+      </div>
+      <div class="project-row">
+        <small style="color:var(--muted)">Attendance: ${s.attendance}%</small>
+        <span class="project-action-note">View Checklist & Details →</span>
+      </div>
+    </article>`;
+  }).join('');
+}
+
+function bindProjectCards(){
+  document.querySelectorAll('.project-card').forEach(card=>{
+    card.onclick=()=>openProjectDrawer(card.dataset.projectId);
+    card.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();openProjectDrawer(card.dataset.projectId)}};
+  });
+}
+
+function openProjectDrawer(projectId){
+  const project = state.data?.sites?.find(s=>s.id===projectId);
+  if(!project) return showToast('Project details not found.');
+  if(!project.checklist){
+    project.checklist = [
+      { category:'Infrastructure', weight:25, items:[
+        { id:'inf-1', text:'Is the facility physically accessible (ramps, barrier-free corridors, accessible toilets)?', weight:12.5, checked:true },
+        { id:'inf-2', text:'Are safety equipment, fire extinguishers, and emergency evacuation exits functional and inspected?', weight:12.5, checked:true }
+      ]},
+      { category:'Staffing & Attendance', weight:25, items:[
+        { id:'stf-1', text:'Is the daily staff attendance register up to date and corroborated with biometric logs?', weight:12.5, checked:true },
+        { id:'stf-2', text:'Is the designated project in-charge physically present on-site during operational hours?', weight:12.5, checked:false }
+      ]},
+      { category:'Documentation', weight:25, items:[
+        { id:'doc-1', text:'Are financial accounts, grant utilization certificates, and beneficiary registers updated?', weight:12.5, checked:false },
+        { id:'doc-2', text:'Is DPDP-compliant data handling, beneficiary confidentiality, and written consent followed?', weight:12.5, checked:true }
+      ]},
+      { category:'Service Delivery', weight:25, items:[
+        { id:'srv-1', text:'Is the approved DoSJE training syllabus, daily curriculum, and practical module followed?', weight:12.5, checked:true },
+        { id:'srv-2', text:'Are course training kits, uniforms/materials, and stipulated beneficiary stipends distributed?', weight:12.5, checked:false }
+      ]}
+    ];
+  }
+  const drawerWrap=$('#drawer-wrap');
+  if(!drawerWrap) return;
+  renderDrawerContent(project);
+  drawerWrap.classList.remove('hidden');
+  $('#drawer-overlay').onclick=closeProjectDrawer;
+}
+
+function closeProjectDrawer(){
+  const drawerWrap=$('#drawer-wrap');
+  if(drawerWrap) drawerWrap.classList.add('hidden');
+}
+
+function renderDrawerContent(project){
+  const statusVal = project.status || (project.camera === 'Offline' ? 'Closed' : 'Live');
+  const updatedText = formatRelativeOrDate(project.lastUpdated);
+  let checklistHtml = '';
+  project.checklist.forEach((cat, catIdx)=>{
+    const catChecked = cat.items.filter(i=>i.checked).length;
+    checklistHtml += `<div class="checklist-cat">
+      <div class="checklist-cat-head">
+        <span>${esc(cat.category)} (${catChecked}/${cat.items.length})</span>
+        <span class="cat-weight-pill">Weight: ${cat.weight}%</span>
+      </div>
+      <div class="checklist-items">
+        ${cat.items.map(item=>`
+          <label class="checklist-item ${item.checked?'checked':''}">
+            <input type="checkbox" class="chk-input" data-item-id="${esc(item.id)}" ${item.checked?'checked':''}>
+            <div class="chk-label">
+              <div>${esc(item.text)}</div>
+              <span class="item-weight">Item Weight: ${item.weight}%</span>
+            </div>
+          </label>
+        `).join('')}
+      </div>
+    </div>`;
+  });
+
+  $('#drawer-content').innerHTML = `
+    <div class="drawer-header">
+      <button class="drawer-close" id="close-drawer" title="Close">×</button>
+      <div class="drawer-badges">
+        ${badge(project.risk)}
+        <button class="status-toggle ${statusVal.toLowerCase()}" id="toggle-proj-status" title="Click to toggle status">
+          ${statusVal === 'Live' ? '● Live (Operational)' : '○ Closed (Offline)'} ⇄
+        </button>
+        <span class="badge info">${esc(project.scheme)}</span>
+      </div>
+      <h2 class="drawer-title">${esc(project.name)}</h2>
+      <div class="drawer-meta">${esc(project.district)}, ${esc(project.state)} · ID: ${esc(project.id)}</div>
+      <div class="score-box">
+        <div class="score-row">
+          <span class="score-label">Compliance score</span>
+          <span class="score-val" id="drawer-score-val">${project.score}%</span>
+        </div>
+        <div class="progress" style="margin:4px 0 8px; height:8px">
+          <i id="drawer-progress-bar" style="width:${project.score}%"></i>
+        </div>
+        <div class="score-row" style="margin-bottom:0">
+          <span class="score-updated" id="drawer-last-updated">Last updated: ${updatedText}</span>
+          <small style="color:var(--muted);font-weight:600">Attendance: ${project.attendance}%</small>
+        </div>
+      </div>
+    </div>
+    <div class="drawer-body">
+      <div style="margin-bottom:14px">
+        <h3 style="font-size:15px;color:var(--deep);margin-bottom:4px">Compliance Inspection Checklist</h3>
+        <p style="font-size:12px;color:var(--muted);margin:0">Ticking any item automatically recalculates the compliance score and logs the change in real time.</p>
+      </div>
+      ${checklistHtml}
+      <div class="drawer-notes">
+        <h4>Inspector Field Observations & Notes</h4>
+        <textarea id="drawer-note-text" placeholder="Add verified field observation or corrective action note for this project…"></textarea>
+        <button class="secondary" id="save-drawer-note" style="font-size:12px;padding:8px 14px">+ Add Inspector Note to Audit Log</button>
+      </div>
+    </div>
+  `;
+  $('#close-drawer').onclick = closeProjectDrawer;
+  document.querySelectorAll('#drawer-content .chk-input').forEach(chk=>{
+    chk.onchange = (e) => handleChecklistToggle(project, e.target);
+  });
+  $('#toggle-proj-status').onclick = () => handleStatusToggle(project);
+  $('#save-drawer-note').onclick = () => handleSaveInspectorNote(project);
+}
+
+async function handleChecklistToggle(project, checkbox){
+  const itemId = checkbox.dataset.itemId;
+  const isChecked = checkbox.checked;
+  checkbox.closest('.checklist-item')?.classList.toggle('checked', isChecked);
+  let targetItem = null, totalWeights = 0, checkedWeights = 0;
+  project.checklist.forEach(cat=>{
+    cat.items.forEach(item=>{
+      totalWeights += (item.weight || 12.5);
+      if(item.id === itemId){ item.checked = isChecked; targetItem = item; }
+      if(item.checked) checkedWeights += (item.weight || 12.5);
+    });
+  });
+  const oldScore = project.score;
+  const newScore = Math.round((checkedWeights / (totalWeights || 100)) * 100);
+  const delta = newScore - oldScore;
+  project.score = newScore;
+  project.lastUpdated = new Date().toISOString();
+
+  // 1. Update Drawer Sticky Header DOM smoothly
+  const scoreValEl = $('#drawer-score-val'), progressEl = $('#drawer-progress-bar'), updatedEl = $('#drawer-last-updated');
+  if(scoreValEl) scoreValEl.textContent = `${newScore}%`;
+  if(progressEl) progressEl.style.width = `${newScore}%`;
+  if(updatedEl) updatedEl.textContent = `Last updated: Just now`;
+
+  // Update category count in header
+  const catHead = checkbox.closest('.checklist-cat')?.querySelector('.checklist-cat-head span');
+  if(catHead){
+    const catItems = checkbox.closest('.checklist-items')?.querySelectorAll('.chk-input');
+    const catChecked = [...catItems].filter(c=>c.checked).length;
+    const catTitle = catHead.textContent.split('(')[0].trim();
+    catHead.textContent = `${catTitle} (${catChecked}/${catItems.length})`;
+  }
+
+  // 2. Update Main List Project Card DOM immediately (no page reload)
+  const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
+  if(cardEl){
+    const cardScore = cardEl.querySelector('.card-score');
+    const cardProgress = cardEl.querySelector('.card-progress-bar');
+    if(cardScore) cardScore.textContent = `${newScore}%`;
+    if(cardProgress) cardProgress.style.width = `${newScore}%`;
+  }
+
+  // 3. Create Audit Log entries immediately for real-time feed
+  const actorName = sessionStorage.saarthiUser ? JSON.parse(sessionStorage.saarthiUser).name : 'Arjun Mehta (PMU Inspector)';
+  const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
+  const checklistLog = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: project.lastUpdated,
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'checklist',
+    actor: actorName,
+    field: targetItem ? targetItem.text.slice(0, 45) + '…' : 'Checklist Item',
+    oldValue: isChecked ? 'Unchecked' : 'Checked',
+    newValue: isChecked ? 'Checked' : 'Unchecked',
+    description: `Checklist item ${isChecked ? 'verified' : 'unmarked'}: "${targetItem ? targetItem.text : ''}"`
+  };
+  const scoreLog = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: project.lastUpdated,
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'score',
+    actor: actorName,
+    field: 'Compliance Score',
+    oldValue: `${oldScore}%`,
+    newValue: `${newScore}%`,
+    delta: deltaStr,
+    description: `Compliance score recalculated from ${oldScore}% to ${newScore}% (${deltaStr})`
+  };
+  state.data.logs = state.data.logs || [];
+  state.data.logs.unshift(scoreLog);
+  state.data.logs.unshift(checklistLog);
+  if(state.view === 'logs') applyLogFilters();
+
+  // 4. Persist to Backend API
+  try {
+    await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
+      method: 'PUT',
+      body: JSON.stringify({ checklist: project.checklist, score: project.score, logEntry: checklistLog })
+    });
+  } catch(e){
+    try { localStorage.setItem(`checklist_${project.id}`, JSON.stringify(project.checklist)); } catch{}
+  }
+}
+
+async function handleStatusToggle(project){
+  const currentStatus = project.status || (project.camera === 'Offline' ? 'Closed' : 'Live');
+  const nextStatus = currentStatus === 'Live' ? 'Closed' : 'Live';
+  project.status = nextStatus;
+  project.camera = nextStatus === 'Closed' ? 'Offline' : 'Live';
+  project.lastUpdated = new Date().toISOString();
+  const toggleBtn = $('#toggle-proj-status');
+  if(toggleBtn){
+    toggleBtn.className = `status-toggle ${nextStatus.toLowerCase()}`;
+    toggleBtn.innerHTML = `${nextStatus === 'Live' ? '● Live (Operational)' : '○ Closed (Offline)'} ⇄`;
+  }
+  const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
+  if(cardEl){
+    const cardStatus = cardEl.querySelector('.badge.live, .badge.closed, .badge.offline');
+    if(cardStatus){
+      cardStatus.className = `badge ${nextStatus.toLowerCase()}`;
+      cardStatus.textContent = nextStatus === 'Live' ? '● Live' : '○ Closed';
+    }
+  }
+  const actorName = sessionStorage.saarthiUser ? JSON.parse(sessionStorage.saarthiUser).name : 'Arjun Mehta (PMU Inspector)';
+  const statusLog = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: project.lastUpdated,
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'status',
+    actor: actorName,
+    field: 'Status',
+    oldValue: currentStatus,
+    newValue: nextStatus,
+    description: `Project operational status changed from ${currentStatus} to ${nextStatus}`
+  };
+  state.data.logs = state.data.logs || [];
+  state.data.logs.unshift(statusLog);
+  if(state.view === 'logs') applyLogFilters();
+  showToast(`Project status updated to ${nextStatus}.`);
+  try {
+    await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
+      method: 'PUT',
+      body: JSON.stringify({ status: nextStatus, logEntry: statusLog })
+    });
+  } catch{}
+}
+
+async function handleSaveInspectorNote(project){
+  const noteInput = $('#drawer-note-text');
+  const text = noteInput ? noteInput.value.trim() : '';
+  if(!text) return showToast('Please enter an observation note.');
+  project.lastUpdated = new Date().toISOString();
+  const actorName = sessionStorage.saarthiUser ? JSON.parse(sessionStorage.saarthiUser).name : 'Arjun Mehta (PMU Inspector)';
+  const commentLog = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: project.lastUpdated,
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'comment',
+    actor: actorName,
+    field: 'Inspector Observation',
+    oldValue: '',
+    newValue: text.slice(0, 50) + (text.length > 50 ? '…' : ''),
+    description: `Inspector Note: "${text}"`
+  };
+  state.data.logs = state.data.logs || [];
+  state.data.logs.unshift(commentLog);
+  if(state.view === 'logs') applyLogFilters();
+  noteInput.value = '';
+  showToast('Inspector observation added to audit log.');
+  try {
+    await api('/api/logs', { method: 'POST', body: JSON.stringify(commentLog) });
+  } catch{}
+}
+
+function logs(){
+  const d = state.data;
+  const sitesList = d.sites || [];
+  const states = [...new Set(sitesList.map(s => s.state))].sort();
+  return `
+    <div class="logs-header-box">
+      <div>
+        <h2 style="font-size:20px;margin-bottom:4px">Audit Logs & Activity Trail</h2>
+        <p style="font-size:12px;color:var(--muted);margin:0">Real-time immutable ledger of checklist inspections, score adjustments, and status changes across all projects.</p>
+      </div>
+      <div class="live-stream-badge">
+        <span class="pulse-dot"></span> LIVE STREAMING
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:20px;padding:16px">
+      <div class="logs-toolbar">
+        <div>
+          <span class="state-label">FILTER BY PROJECT</span>
+          <select id="log-filter-project" class="state-filter" style="width:100%">
+            <option value="">All Projects</option>
+            ${sitesList.map(s => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <span class="state-label">ACTION TYPE</span>
+          <select id="log-filter-action" class="state-filter" style="width:100%">
+            <option value="all">All Action Types</option>
+            <option value="checklist">Checklist Updates</option>
+            <option value="score">Compliance Score Changes</option>
+            <option value="status">Status Changes</option>
+            <option value="comment">Inspector Notes</option>
+            <option value="inspection">Inspections</option>
+          </select>
+        </div>
+        <div>
+          <span class="state-label">DATE RANGE</span>
+          <select id="log-filter-date" class="state-filter" style="width:100%">
+            <option value="0">All Time</option>
+            <option value="1">Today</option>
+            <option value="7">Last 7 Days</option>
+            <option value="30">Last 30 Days</option>
+          </select>
+        </div>
+        <div>
+          <span class="state-label">STATE / UT</span>
+          <select id="log-filter-state" class="state-filter" style="width:100%">
+            <option value="all">All States & UTs</option>
+            ${states.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="log-feed" id="logs-container">
+      ${renderLogRows(d.logs || [])}
+    </div>
+  `;
+}
+
+function renderLogRows(logsList){
+  if(!logsList || !logsList.length){
+    return `<div class="card empty">No audit log entries match the selected filters.</div>`;
+  }
+  return logsList.map(l => {
+    let actionBadge = '';
+    if (l.actionType === 'checklist') actionBadge = `<span class="badge info">Checklist</span>`;
+    else if (l.actionType === 'score') actionBadge = `<span class="badge warning">Score Recalc</span>`;
+    else if (l.actionType === 'status') actionBadge = `<span class="badge high">Status Toggle</span>`;
+    else if (l.actionType === 'comment') actionBadge = `<span class="badge live">Inspector Note</span>`;
+    else actionBadge = `<span class="badge info">${esc(l.actionType || 'Action')}</span>`;
+
+    let valueChange = '';
+    if (l.oldValue && l.newValue) {
+      valueChange = `<span class="change-pill">${esc(l.oldValue)} → <b>${esc(l.newValue)}</b></span>`;
+    } else if (l.delta) {
+      valueChange = `<span class="change-pill">Delta: <b>${esc(l.delta)}</b></span>`;
+    }
+    const timeStr = formatRelativeOrDate(l.timestamp);
+
+    return `
+      <div class="log-row" data-project-id="${esc(l.projectId)}" title="Click to view ${esc(l.projectName)} details">
+        <div class="log-time">${esc(timeStr)}</div>
+        <div class="log-proj">${esc(l.projectName)}</div>
+        <div class="log-desc">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+            ${actionBadge}
+            <span>${esc(l.description || l.field)}</span>
+          </div>
+          ${l.actor ? `<span class="log-actor">By ${esc(l.actor)}</span>` : ''}
+        </div>
+        <div>${valueChange}</div>
+        <div class="log-arrow">→</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function applyLogFilters(){
+  const projectVal = $('#log-filter-project')?.value || '';
+  const actionVal = $('#log-filter-action')?.value || 'all';
+  const dateDays = parseInt($('#log-filter-date')?.value || '0', 10);
+  const stateVal = $('#log-filter-state')?.value || 'all';
+  let filtered = [...(state.data?.logs || [])];
+  if(projectVal) filtered = filtered.filter(l => l.projectId === projectVal);
+  if(actionVal && actionVal !== 'all') filtered = filtered.filter(l => l.actionType === actionVal);
+  if(stateVal && stateVal !== 'all') filtered = filtered.filter(l => l.state === stateVal);
+  if(dateDays > 0){
+    const cutoff = Date.now() - dateDays * 86400000;
+    filtered = filtered.filter(l => new Date(l.timestamp).getTime() >= cutoff);
+  }
+  const container = $('#logs-container');
+  if(container){
+    container.innerHTML = renderLogRows(filtered);
+    bindLogClicks();
+  }
+}
+
+function bindLogClicks(){
+  document.querySelectorAll('#logs-container .log-row').forEach(row=>{
+    row.onclick = () => {
+      const projId = row.dataset.projectId;
+      if(projId && projId !== 'P-General') openProjectDrawer(projId);
+    };
+  });
+}
+
 function inspections(){return `<div class="card"><div class="card-head"><div><h2>Inspections</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Create a field inspection, capture verified evidence and location, then choose fair auto-assignment or a specific inspector.</p></div></div><div class="assignment-explainer"><b>On-ground workflow:</b> start the assignment when the inspector reaches the site. The registered NGO/institute is notified. Submitting the verified report completes the inspection and shares the report with that organisation.</div>${state.data.inspections.length?inspectionTable(state.data.inspections,true):'<div class="empty">No inspection has been created yet.</div>'}</div>`}
 function cctv(){return `<div class="card"><div class="card-head"><div><h2>Authorized live CCTV feeds</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Connect up to four authorised field phones. The video is relayed securely to this monitoring screen.</p></div><span class="badge live">● AI SCREENING ACTIVE</span></div><div class="ai-monitor-note"><b>AI-assisted monitoring:</b> monitors connected feeds for feed loss and unusual movement. <span>Every AI alert requires an officer’s review before any action.</span></div><div class="cctv-grid mobile-cctv-grid">${[1,2,3,4].map(slot=>`<div class="feed mobile-cctv" id="mobile-cctv-card-${slot}"><video id="mobile-cctv-video-${slot}" autoplay playsinline></video><span class="status">● MOBILE CCTV ${slot}</span><span class="cam-time" data-clock></span><button class="connect-mobile-camera" data-mobile-slot="${slot}">Connect phone camera</button><button class="cctv-fullscreen" data-fullscreen-slot="${slot}" disabled>Full screen</button><div class="cctv-ai-status" id="cctv-ai-status-${slot}">AI: Awaiting camera connection</div><h3>Field camera ${slot}</h3><small id="mobile-cctv-caption-${slot}">Ready for authorised device</small></div>`).join('')}</div></div>`}
 function reports(){const r=state.data.reports,grievances=state.data.feedback||[];return `<div class="card"><div class="card-head"><div><h2>Inspection reports</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Server timestamps and rules are used to flag evidence for human review.</p></div><button class="primary" id="report-top">+ New report</button></div>${r.length?`<table class="table"><thead><tr><th>REPORT</th><th>PROJECT</th><th>FINDING</th><th>STATUS</th></tr></thead><tbody>${r.map(x=>`<tr><td><strong>${x.id}</strong><br><small style="color:var(--muted)">${new Date(x.submittedAt).toLocaleString()}</small></td><td>${esc(x.site)}</td><td>${esc(x.finding)}${x.anomalies?.length?`<small class="integrity-flag">⚠ ${esc(x.anomalies[0])}</small>`:''}</td><td>${badge(x.status)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">No submitted reports yet. Start a mobile inspection to create a geo-tagged report.</div>'}</div><div class="card section"><div class="card-head"><div><h2>Beneficiary grievances & media evidence</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Visible to authorised officials and the linked project / NGO account.</p></div></div>${grievances.length?`<div class="evidence-grid">${grievances.map(item=>`<article class="evidence-card"><div><span>${badge(item.category)}</span><small>${esc(item.id)} · ${new Date(item.submittedAt).toLocaleString('en-IN')}</small></div><h3>${esc(item.ngo)}</h3><p>${esc(item.message)}</p>${evidencePreview(item.evidence)}${item.evidence?`<small class="integrity-note">✓ ${esc(item.evidence.integrity)}<br>Server time: ${new Date(item.evidence.serverReceivedAt).toLocaleString('en-IN')}<br>Hash: ${esc(item.evidence.serverHash.slice(0,16))}…</small>`:''}</article>`).join('')}</div>`:'<div class="empty">No beneficiary grievances with evidence have been received.</div>'}</div><div class="integrity-card"><h3>Evidence integrity controls</h3><div><b>Server evidence hash</b><span>SHA-256 is calculated from uploaded media on the server; any changed bytes produce a different hash.</span></div><div><b>Location and time</b><span>Server network time is authoritative. Production Android uses native mock-location attestation plus cellular/network corroboration; this web demo cannot truthfully detect mock-location apps.</span></div><div><b>Offline protection</b><span>Production mobile builds store queued media in encrypted SQLite/IndexedDB and retain its capture hash; altered files fail verification when synced.</span></div><div><b>Active anomaly rules</b><span>Flags: project geo-fence deviation over 100 m; two inspections 15 km apart within 10 minutes; evidence outside 08:00–20:00 IST.</span></div></div>`}
-function render(){if(window.nationwideMap){window.nationwideMap.remove();window.nationwideMap=null}const titles={overview:'Good morning, Arjun',projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',reports:'Inspection reports'};$('#page-title').textContent=titles[state.view];$('#content').innerHTML=({overview,projects,inspections,cctv,reports})[state.view]();document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===state.view));bind();if(state.view==='overview')initIndiaMap()}
+function render(){if(window.nationwideMap){window.nationwideMap.remove();window.nationwideMap=null}const titles={overview:'Good morning, Arjun',projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',reports:'Inspection reports',logs:'Real-Time Audit Trail'};$('#page-title').textContent=titles[state.view]||'Saarthi Monitoring';$('#content').innerHTML=({overview,projects,inspections,cctv,reports,logs})[state.view]();document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===state.view));bind();if(state.view==='overview')initIndiaMap()}
 function reportModal(){return `<h2>Submit inspection report</h2><p>Capture verified field evidence and use device GPS to stamp the actual inspection location.</p><form id="report-form"><div class="form-grid"><label class="field full">Project<select name="site" required>${state.data.sites.map(s=>`<option>${esc(s.name)}</option>`).join('')}</select></label><label class="field">Inspection outcome<select name="finding"><option>Compliant</option><option>Needs corrective action</option><option>Critical non-compliance</option></select></label><label class="field">Evidence type<select name="evidence"><option>Photo + geo-tag</option><option>Video evidence</option><option>VC verification</option></select></label><label class="field full">Inspection notes<textarea name="notes" placeholder="Enter verified observations and required corrective action…" required></textarea></label><div class="field full geo-field"><div class="geo-heading"><span>Geo-tagged inspection location</span><button class="text-btn" type="button" id="expand-geo-map">Expand map ↗</button></div><div id="inspection-geo-map" class="inspection-map"><div class="geo-loading">Loading secure map…</div></div><div class="geo-actions"><button class="secondary geo-button" type="button" id="get-current-location">⌖ Capture precise GPS</button><button class="secondary" type="button" id="center-geo-pin" disabled>◎ Center location</button></div><div class="geo-details" id="geo-details"><span class="geo-dot"></span><span>GPS location not captured yet</span></div><input name="location" id="inspection-location" value="GPS location not captured yet" readonly></div></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="primary">Submit verified report</button></div></form>`}
 function inspectionModal(){const available=state.data.sites.filter(site=>!site.inspectionAssigned),inspectors=state.data.inspectors||[];return `<h2>New inspection</h2><p>Capture the field details and geo-tagged evidence, then choose how the responsible inspector should be assigned.</p><form id="inspection-assign-form"><div class="form-grid"><label class="field full">Project<select name="siteId" required>${available.map(site=>`<option value="${esc(site.id)}">${esc(site.name)} · ${esc(site.district)}, ${esc(site.state)}</option>`).join('')}</select></label><label class="field">Due by<select name="due"><option>Within 24 hours</option><option>Within 48 hours</option><option>Within 7 days</option><option>Scheduled follow-up</option></select></label><label class="field">Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label><label class="field">Inspection outcome<select name="finding"><option>Compliant</option><option>Needs corrective action</option><option>Critical non-compliance</option></select></label><label class="field">Evidence type<select name="evidence"><option>Photo + geo-tag</option><option>Video evidence</option><option>VC verification</option></select></label><label class="field full">Inspection notes<textarea name="notes" placeholder="Enter verified observations and required corrective action…" required></textarea></label><div class="field full geo-field"><div class="geo-heading"><span>Geo-tagged inspection location</span><button class="text-btn" type="button" id="expand-geo-map">Expand map ↗</button></div><div id="inspection-geo-map" class="inspection-map"><div class="geo-loading">Loading secure map…</div></div><div class="geo-actions"><button class="secondary geo-button" type="button" id="get-current-location">⌖ Capture precise GPS</button><button class="secondary" type="button" id="center-geo-pin" disabled>◎ Center location</button></div><div class="geo-details" id="geo-details"><span class="geo-dot"></span><span>GPS location not captured yet</span></div><input name="location" id="inspection-location" value="GPS location not captured yet" readonly></div><label class="field full">Specific inspector <small>(only used for Specific assign)</small><select name="inspectorName"><option value="">Select inspector</option>${inspectors.map(inspector=>`<option value="${esc(inspector.name)}">${esc(inspector.name)} · ${esc(inspector.role)} · workload ${inspector.workload}</option>`).join('')}</select></label></div><div class="assignment-choice"><b>Choose assignment method</b><span>Auto-assignment is fair by design; specific assignment is recorded in the audit trail.</span></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="secondary assignment-button" type="submit" value="specific">Assign to selected inspector</button><button class="primary" type="submit" value="auto">✦ Auto-assign fairly</button></div></form>`}
 function notificationsModal(){return `<h2>Notifications</h2><p>Latest system alerts and inspection activity.</p><div class="notification-list">${state.data.alerts.map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${esc(a.time)}</time></div>`).join('')||'<div class="empty">You have no new notifications.</div>'}</div>`}
@@ -39,10 +475,20 @@ function bind(){
   const profile=$('.profile'); if(profile) profile.onclick=toggleProfileMenu;
   const reportTop=$('#report-top'); if(reportTop) reportTop.onclick=()=>openModal(reportModal());
   const newInspection=$('#new-inspection'); if(newInspection) newInspection.onclick=()=>openModal(inspectionModal());
+  bindProjectCards();
+  const logProj = $('#log-filter-project');
+  const logAction = $('#log-filter-action');
+  const logDate = $('#log-filter-date');
+  const logState = $('#log-filter-state');
+  if(logProj) logProj.onchange = applyLogFilters;
+  if(logAction) logAction.onchange = applyLogFilters;
+  if(logDate) logDate.onchange = applyLogFilters;
+  if(logState) logState.onchange = applyLogFilters;
+  bindLogClicks();
   const search=$('#search');
-  if(search) search.oninput=e=>{ const q=e.target.value.toLowerCase(); $('#projects-grid').innerHTML=projectCards(state.data.sites.filter(s=>Object.values(s).join(' ').toLowerCase().includes(q))); };
+  if(search) search.oninput=e=>{ const q=e.target.value.toLowerCase(); $('#projects-grid').innerHTML=projectCards(state.data.sites.filter(s=>Object.values(s).join(' ').toLowerCase().includes(q))); bindProjectCards(); };
   const stateFilter=$('#state-filter');
-  if(stateFilter){const applyState=()=>{const chosen=stateFilter.value,q=($('#search').value||'').toLowerCase(),shown=state.data.sites.filter(s=>!s.inspectionAssigned&&(!chosen||s.state===chosen)&&Object.values(s).join(' ').toLowerCase().includes(q));$('#projects-grid').innerHTML=projectCards(shown);$('#state-summary').textContent=chosen?`${shown.length} project${shown.length===1?'':'s'} available in ${chosen}`:`${shown.length} projects available for inspection`;};stateFilter.onchange=applyState;$('#search').oninput=applyState;}
+  if(stateFilter){const applyState=()=>{const chosen=stateFilter.value,q=($('#search').value||'').toLowerCase(),shown=state.data.sites.filter(s=>!s.inspectionAssigned&&(!chosen||s.state===chosen)&&Object.values(s).join(' ').toLowerCase().includes(q));$('#projects-grid').innerHTML=projectCards(shown);bindProjectCards();$('#state-summary').textContent=chosen?`${shown.length} project${shown.length===1?'':'s'} available in ${chosen}`:`${shown.length} projects available for inspection`;};stateFilter.onchange=applyState;$('#search').oninput=applyState;}
   document.querySelectorAll('[data-start-inspection]').forEach(button=>button.onclick=()=>startGroundInspection(button.dataset.startInspection));
   document.querySelectorAll('[data-vc]').forEach(button=>button.onclick=()=>openModal(vcModal(button.dataset.vc)));
   const startCamera=$('#start-camera'), stopCamera=$('#stop-camera');
