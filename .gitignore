@@ -3,6 +3,7 @@ node_modules/
 .pnpm-store/
 .env
 .env.*
+!.env.example
 npm-debug.log*
 
 # Project scratch files

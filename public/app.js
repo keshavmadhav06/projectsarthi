@@ -10,12 +10,59 @@ const evidencePreview=evidence=>{if(!evidence?.data)return '<span class="evidenc
 const showToast=m=>{const el=$('#toast');el.textContent=m;el.classList.remove('hidden');setTimeout(()=>el.classList.add('hidden'),3500)};
 const api=(url,options={})=>fetch(`${apiOrigin}${url}`,{...options,headers:{'Content-Type':'application/json',...(options.headers||{}),...(sessionStorage.saarthiToken?{Authorization:`Bearer ${sessionStorage.saarthiToken}`}:{})}});
 let dashboardFingerprint='';let dashboardSyncTimer=null;
-async function load(){if(!sessionStorage.saarthiUser){sessionStorage.saarthiUser=JSON.stringify({name:'Arjun Mehta',employeeId:'GOV-2026-1001',role:'PMU Inspector'});}const r=await api('/api/dashboard');if(r.status===401){delete sessionStorage.saarthiToken;delete sessionStorage.saarthiUser;showAuth();return}state.data=await r.json();dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats,logs:state.data.logs});if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';render()}
-function startDashboardSync(){if(dashboardSyncTimer)return;dashboardSyncTimer=setInterval(async()=>{if(!sessionStorage.saarthiToken||state.view==='cctv')return;try{const r=await api('/api/dashboard',{cache:'no-store'});if(!r.ok)return;const next=await r.json(),fingerprint=JSON.stringify({sites:next.sites,inspections:next.inspections,stats:next.stats,logs:next.logs});if(fingerprint!==dashboardFingerprint){state.data=next;dashboardFingerprint=fingerprint;render();if(state.view!=='logs')showToast('Dashboard updated with the latest project information.')}}catch{}},5000)}
-function overview(){const d=state.data;return `<div class="stats"><div class="card"><div class="stat-label">Registered projects</div><div class="stat-value">${d.stats.monitored}</div><span class="trend">Live data from registered organisations</span></div><div class="card"><div class="stat-label">CCTV feeds live</div><div class="stat-value">${d.stats.live}<small style="font-size:13px;color:var(--muted)"> / ${d.stats.monitored}</small></div><span class="trend">Authorized field devices only</span></div><button class="card dashboard-link" data-view-go="inspections"><div class="stat-label">Open inspections</div><div class="stat-value">${d.stats.inspections}</div><span class="trend down">Open inspection workspace →</span></button><div class="card"><div class="stat-label">Average compliance</div><div class="stat-value">${d.stats.compliance}%</div><span class="trend">Calculated from registered projects</span></div></div><div class="grid"><div class="card"><div class="card-head"><h2>Project location map</h2><button class="text-btn" data-view-go="projects">View projects →</button></div><div id="india-project-map" class="real-map" aria-label="Map showing registered project locations"></div><div class="map-legend"><span class="map-high">●</span> High risk <span class="map-medium">●</span> Medium risk <span class="map-low">●</span> Low risk <span class="map-pending">●</span> Pending review</div></div><div class="card"><div class="card-head"><h2>Priority alerts</h2><button class="text-btn" data-view-go="reports">View all</button></div>${d.alerts.slice(0,3).map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${a.time}</time></div>`).join('')||'<div class="empty">No active alerts.</div>'}</div></div><div class="card section"><div class="card-head"><h2>Inspection queue</h2><button class="text-btn" data-view-go="inspections">Manage inspections →</button></div>${d.inspections.length?inspectionTable(d.inspections.slice(0,3)):'<div class="empty">No inspections are assigned. Create one from the Inspections page.</div>'}</div>`}
-function inspectionTable(items,showActions=false){return `<table class="table"><thead><tr><th>INSPECTION</th><th>ASSIGNED TO</th><th>WHEN</th><th>PRIORITY</th><th>STATUS</th>${showActions?'<th>ACTION</th>':''}</tr></thead><tbody>${items.map(i=>`<tr><td><strong>${esc(i.site)}</strong><br><small style="color:var(--muted)">${i.id}</small></td><td>${esc(i.inspector)}</td><td>${esc(i.due)}</td><td>${badge(i.priority)}</td><td>${badge(i.status)}</td>${showActions?`<td>${i.status==='Assigned'?`<button class="secondary start-ground" data-start-inspection="${esc(i.id)}">Start on ground</button>`:i.status==='In progress'?'<span class="ground-live">● On ground</span>':'<span class="report-ready">Report submitted</span>'}</td>`:''}</tr>`).join('')}</tbody></table>`}
-function projects(){const d=state.data;const states=[...new Set(d.sites.map(s=>s.state))].sort(),available=d.sites.filter(s=>!s.inspectionAssigned);return `<div class="project-toolbar"><div><span class="state-label">STATE / UT</span><select id="state-filter" class="state-filter"><option value="">All States & UTs</option>${states.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}</select></div><div id="state-summary" class="state-summary">${available.length} projects available for inspection</div></div><input class="filter" id="search" placeholder="Search within selected state by project, district, or scheme…"><div class="project-grid" id="projects-grid">${projectCards(available)}</div>`}
+let liveSocket = null;
+try {
+  if (typeof io !== 'undefined') {
+    liveSocket = io();
+    liveSocket.on('connect', () => {
+      console.log('[Live Sync] Connected to Saarthi real-time gateway via WebSockets');
+    });
+    liveSocket.on('checklist:updated', (data) => {
+      if (!state.data || !state.data.sites) return;
+      const project = state.data.sites.find(s => s.id === data.projectId);
+      if (project) {
+        project.checklist = data.checklist;
+        project.score = data.score;
+        project.lastUpdated = data.lastUpdated;
+        if (data.status) {
+          project.status = data.status;
+          project.camera = data.status === 'Closed' ? 'Offline' : 'Live';
+        }
+        const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
+        if (cardEl) {
+          const cardScore = cardEl.querySelector('.card-score');
+          const cardProgress = cardEl.querySelector('.card-progress-bar');
+          if (cardScore) cardScore.textContent = `${data.score}%`;
+          if (cardProgress) cardProgress.style.width = `${data.score}%`;
+        }
+        const drawerWrap = $('#drawer-wrap');
+        if (drawerWrap && !drawerWrap.classList.contains('hidden') && window._activeDrawerProjectId === project.id) {
+          const scoreValEl = $('#drawer-score-val'), progressEl = $('#drawer-progress-bar'), updatedEl = $('#drawer-last-updated');
+          if (scoreValEl) scoreValEl.textContent = `${data.score}%`;
+          if (progressEl) progressEl.style.width = `${data.score}%`;
+          if (updatedEl) updatedEl.textContent = `Last updated: ${formatRelativeOrDate(data.lastUpdated)}`;
+        }
+      }
+    });
+    liveSocket.on('audit:new_entry', (entry) => {
+      if (!state.data) return;
+      state.data.logs = state.data.logs || [];
+      if (!state.data.logs.some(l => l.id === entry.id)) {
+        state.data.logs.unshift(entry);
+        if (state.view === 'logs' && typeof applyLogFilters === 'function') {
+          applyLogFilters();
+        }
+      }
+    });
+  }
+} catch (e) {
+  console.warn('[Socket.io Notice]', e.message);
+}
+
 function formatRelativeOrDate(ts){
+  if (typeof window.formatRelativeIST === 'function') {
+    return window.formatRelativeIST(ts);
+  }
   if(!ts) return 'Just now';
   const d = new Date(ts);
   if(isNaN(d.getTime())) return 'Recently';
@@ -95,6 +142,7 @@ function normalizeCategoryWeights(cat){
 }
 
 function openProjectDrawer(projectId){
+  window._activeDrawerProjectId = projectId;
   const project = state.data?.sites?.find(s=>s.id===projectId);
   if(!project) return showToast('Project details not found.');
   if(!project.assignedInspector) project.assignedInspector = 'Arjun Mehta';
@@ -126,6 +174,7 @@ function openProjectDrawer(projectId){
 }
 
 function closeProjectDrawer(){
+  window._activeDrawerProjectId = null;
   const drawerWrap=$('#drawer-wrap');
   if(drawerWrap) drawerWrap.classList.add('hidden');
 }
@@ -190,7 +239,7 @@ function renderDrawerContent(project){
           <i id="drawer-progress-bar" style="width:${project.score}%"></i>
         </div>
         <div class="score-row" style="margin-bottom:0">
-          <span class="score-updated" id="drawer-last-updated">Last updated: ${updatedText}</span>
+          <span class="score-updated" id="drawer-last-updated">Last updated: <span data-timestamp="${esc(project.lastUpdated)}">${updatedText}</span></span>
           <small style="color:var(--muted);font-weight:600">Attendance: ${project.attendance}%</small>
         </div>
       </div>
@@ -352,10 +401,15 @@ async function handleAddCustomItem(project, catIdx, text, rawWeight){
   showToast('Custom item added and category weights rescaled.');
 
   try {
-    await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
-      method: 'PUT',
-      body: JSON.stringify({ checklist: project.checklist, score: project.score, logEntry: addLog })
+    const res = await api(`/api/projects/${encodeURIComponent(project.id)}/custom-item`, {
+      method: 'POST',
+      body: JSON.stringify({ category: cat.category, text, rawWeight })
     });
+    if (res.ok) {
+      const resp = await res.json();
+      if (resp.checklist) project.checklist = resp.checklist;
+      if (typeof resp.score === 'number') project.score = resp.score;
+    }
   } catch(e){
     try { localStorage.setItem(`checklist_${project.id}`, JSON.stringify(project.checklist)); } catch{}
   }
@@ -440,10 +494,14 @@ async function handleDeleteCustomItem(project, catIdx, itemId){
   showToast('Custom item removed and category weights re-normalized.');
 
   try {
-    await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
-      method: 'PUT',
-      body: JSON.stringify({ checklist: project.checklist, score: project.score, logEntry: deleteLog })
+    const res = await api(`/api/projects/${encodeURIComponent(project.id)}/custom-item/${encodeURIComponent(itemId)}`, {
+      method: 'DELETE'
     });
+    if (res.ok) {
+      const resp = await res.json();
+      if (resp.checklist) project.checklist = resp.checklist;
+      if (typeof resp.score === 'number') project.score = resp.score;
+    }
   } catch(e){
     try { localStorage.setItem(`checklist_${project.id}`, JSON.stringify(project.checklist)); } catch{}
   }
@@ -682,6 +740,8 @@ function renderLogRows(logsList){
     else if (l.actionType === 'score') actionBadge = `<span class="badge warning">Score Recalc</span>`;
     else if (l.actionType === 'status') actionBadge = `<span class="badge high">Status Toggle</span>`;
     else if (l.actionType === 'comment') actionBadge = `<span class="badge live">Inspector Note</span>`;
+    else if (l.actionType === 'custom_item_added') actionBadge = `<span class="badge live">Custom Item</span>`;
+    else if (l.actionType === 'custom_item_deleted') actionBadge = `<span class="badge warning">Item Deleted</span>`;
     else actionBadge = `<span class="badge info">${esc(l.actionType || 'Action')}</span>`;
 
     let valueChange = '';
@@ -690,18 +750,22 @@ function renderLogRows(logsList){
     } else if (l.delta) {
       valueChange = `<span class="change-pill">Delta: <b>${esc(l.delta)}</b></span>`;
     }
-    const timeStr = formatRelativeOrDate(l.timestamp);
+    const exactIst = typeof window.formatToIST === 'function' ? window.formatToIST(l.timestamp) : new Date(l.timestamp).toLocaleString('en-IN');
+    const relTime = formatRelativeOrDate(l.timestamp);
 
     return `
       <div class="log-row" data-project-id="${esc(l.projectId)}" title="Click to view ${esc(l.projectName)} details">
-        <div class="log-time">${esc(timeStr)}</div>
+        <div class="log-time">
+          <div class="relative-time" data-timestamp="${esc(l.timestamp)}">${esc(relTime)}</div>
+          <small class="exact-time" style="color:var(--muted);font-size:11px;white-space:nowrap">${esc(exactIst)}</small>
+        </div>
         <div class="log-proj">${esc(l.projectName)}</div>
         <div class="log-desc">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
             ${actionBadge}
             <span>${esc(l.description || l.field)}</span>
           </div>
-          ${l.actor ? `<span class="log-actor">By ${esc(l.actor)}</span>` : ''}
+          ${(l.actorName || l.actor) ? `<span class="log-actor">By ${esc(l.actorName || l.actor)}</span>` : ''}
         </div>
         <div>${valueChange}</div>
         <div class="log-arrow">→</div>
@@ -742,7 +806,18 @@ function bindLogClicks(){
 function inspections(){return `<div class="card"><div class="card-head"><div><h2>Inspections</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Create a field inspection, capture verified evidence and location, then choose fair auto-assignment or a specific inspector.</p></div></div><div class="assignment-explainer"><b>On-ground workflow:</b> start the assignment when the inspector reaches the site. The registered NGO/institute is notified. Submitting the verified report completes the inspection and shares the report with that organisation.</div>${state.data.inspections.length?inspectionTable(state.data.inspections,true):'<div class="empty">No inspection has been created yet.</div>'}</div>`}
 function cctv(){return `<div class="card"><div class="card-head"><div><h2>Authorized live CCTV feeds</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Connect up to four authorised field phones. The video is relayed securely to this monitoring screen.</p></div><span class="badge live">● AI SCREENING ACTIVE</span></div><div class="ai-monitor-note"><b>AI-assisted monitoring:</b> monitors connected feeds for feed loss and unusual movement. <span>Every AI alert requires an officer’s review before any action.</span></div><div class="cctv-grid mobile-cctv-grid">${[1,2,3,4].map(slot=>`<div class="feed mobile-cctv" id="mobile-cctv-card-${slot}"><video id="mobile-cctv-video-${slot}" autoplay playsinline></video><span class="status">● MOBILE CCTV ${slot}</span><span class="cam-time" data-clock></span><button class="connect-mobile-camera" data-mobile-slot="${slot}">Connect phone camera</button><button class="cctv-fullscreen" data-fullscreen-slot="${slot}" disabled>Full screen</button><div class="cctv-ai-status" id="cctv-ai-status-${slot}">AI: Awaiting camera connection</div><h3>Field camera ${slot}</h3><small id="mobile-cctv-caption-${slot}">Ready for authorised device</small></div>`).join('')}</div></div>`}
 function reports(){const r=state.data.reports,grievances=state.data.feedback||[];return `<div class="card"><div class="card-head"><div><h2>Inspection reports</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Server timestamps and rules are used to flag evidence for human review.</p></div><button class="primary" id="report-top">+ New report</button></div>${r.length?`<table class="table"><thead><tr><th>REPORT</th><th>PROJECT</th><th>FINDING</th><th>STATUS</th></tr></thead><tbody>${r.map(x=>`<tr><td><strong>${x.id}</strong><br><small style="color:var(--muted)">${new Date(x.submittedAt).toLocaleString()}</small></td><td>${esc(x.site)}</td><td>${esc(x.finding)}${x.anomalies?.length?`<small class="integrity-flag">⚠ ${esc(x.anomalies[0])}</small>`:''}</td><td>${badge(x.status)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">No submitted reports yet. Start a mobile inspection to create a geo-tagged report.</div>'}</div><div class="card section"><div class="card-head"><div><h2>Beneficiary grievances & media evidence</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Visible to authorised officials and the linked project / NGO account.</p></div></div>${grievances.length?`<div class="evidence-grid">${grievances.map(item=>`<article class="evidence-card"><div><span>${badge(item.category)}</span><small>${esc(item.id)} · ${new Date(item.submittedAt).toLocaleString('en-IN')}</small></div><h3>${esc(item.ngo)}</h3><p>${esc(item.message)}</p>${evidencePreview(item.evidence)}${item.evidence?`<small class="integrity-note">✓ ${esc(item.evidence.integrity)}<br>Server time: ${new Date(item.evidence.serverReceivedAt).toLocaleString('en-IN')}<br>Hash: ${esc(item.evidence.serverHash.slice(0,16))}…</small>`:''}</article>`).join('')}</div>`:'<div class="empty">No beneficiary grievances with evidence have been received.</div>'}</div><div class="integrity-card"><h3>Evidence integrity controls</h3><div><b>Server evidence hash</b><span>SHA-256 is calculated from uploaded media on the server; any changed bytes produce a different hash.</span></div><div><b>Location and time</b><span>Server network time is authoritative. Production Android uses native mock-location attestation plus cellular/network corroboration; this web demo cannot truthfully detect mock-location apps.</span></div><div><b>Offline protection</b><span>Production mobile builds store queued media in encrypted SQLite/IndexedDB and retain its capture hash; altered files fail verification when synced.</span></div><div><b>Active anomaly rules</b><span>Flags: project geo-fence deviation over 100 m; two inspections 15 km apart within 10 minutes; evidence outside 08:00–20:00 IST.</span></div></div>`}
-function render(){if(window.nationwideMap){window.nationwideMap.remove();window.nationwideMap=null}const titles={overview:'Good morning, Arjun',projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',reports:'Inspection reports',logs:'Real-Time Audit Trail'};$('#page-title').textContent=titles[state.view]||'Saarthi Monitoring';$('#content').innerHTML=({overview,projects,inspections,cctv,reports,logs})[state.view]();document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===state.view));bind();if(state.view==='overview')initIndiaMap()}
+function render(){
+  if(window.nationwideMap){window.nationwideMap.remove();window.nationwideMap=null}
+  const user = getCurrentUser();
+  const firstName = user?.name ? user.name.split(' ')[0] : 'Arjun';
+  const greeting = typeof window.getISTGreeting === 'function' ? window.getISTGreeting(firstName) : `Good morning, ${firstName}`;
+  const titles={overview:greeting,projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',reports:'Inspection reports',logs:'Real-Time Audit Trail'};
+  $('#page-title').textContent=titles[state.view]||'Saarthi Monitoring';
+  $('#content').innerHTML=({overview,projects,inspections,cctv,reports,logs})[state.view]();
+  document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===state.view));
+  bind();
+  if(state.view==='overview')initIndiaMap();
+}
 function reportModal(){return `<h2>Submit inspection report</h2><p>Capture verified field evidence and use device GPS to stamp the actual inspection location.</p><form id="report-form"><div class="form-grid"><label class="field full">Project<select name="site" required>${state.data.sites.map(s=>`<option>${esc(s.name)}</option>`).join('')}</select></label><label class="field">Inspection outcome<select name="finding"><option>Compliant</option><option>Needs corrective action</option><option>Critical non-compliance</option></select></label><label class="field">Evidence type<select name="evidence"><option>Photo + geo-tag</option><option>Video evidence</option><option>VC verification</option></select></label><label class="field full">Inspection notes<textarea name="notes" placeholder="Enter verified observations and required corrective action…" required></textarea></label><div class="field full geo-field"><div class="geo-heading"><span>Geo-tagged inspection location</span><button class="text-btn" type="button" id="expand-geo-map">Expand map ↗</button></div><div id="inspection-geo-map" class="inspection-map"><div class="geo-loading">Loading secure map…</div></div><div class="geo-actions"><button class="secondary geo-button" type="button" id="get-current-location">⌖ Capture precise GPS</button><button class="secondary" type="button" id="center-geo-pin" disabled>◎ Center location</button></div><div class="geo-details" id="geo-details"><span class="geo-dot"></span><span>GPS location not captured yet</span></div><input name="location" id="inspection-location" value="GPS location not captured yet" readonly></div></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="primary">Submit verified report</button></div></form>`}
 function inspectionModal(){const available=state.data.sites.filter(site=>!site.inspectionAssigned),inspectors=state.data.inspectors||[];return `<h2>New inspection</h2><p>Capture the field details and geo-tagged evidence, then choose how the responsible inspector should be assigned.</p><form id="inspection-assign-form"><div class="form-grid"><label class="field full">Project<select name="siteId" required>${available.map(site=>`<option value="${esc(site.id)}">${esc(site.name)} · ${esc(site.district)}, ${esc(site.state)}</option>`).join('')}</select></label><label class="field">Due by<select name="due"><option>Within 24 hours</option><option>Within 48 hours</option><option>Within 7 days</option><option>Scheduled follow-up</option></select></label><label class="field">Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label><label class="field">Inspection outcome<select name="finding"><option>Compliant</option><option>Needs corrective action</option><option>Critical non-compliance</option></select></label><label class="field">Evidence type<select name="evidence"><option>Photo + geo-tag</option><option>Video evidence</option><option>VC verification</option></select></label><label class="field full">Inspection notes<textarea name="notes" placeholder="Enter verified observations and required corrective action…" required></textarea></label><div class="field full geo-field"><div class="geo-heading"><span>Geo-tagged inspection location</span><button class="text-btn" type="button" id="expand-geo-map">Expand map ↗</button></div><div id="inspection-geo-map" class="inspection-map"><div class="geo-loading">Loading secure map…</div></div><div class="geo-actions"><button class="secondary geo-button" type="button" id="get-current-location">⌖ Capture precise GPS</button><button class="secondary" type="button" id="center-geo-pin" disabled>◎ Center location</button></div><div class="geo-details" id="geo-details"><span class="geo-dot"></span><span>GPS location not captured yet</span></div><input name="location" id="inspection-location" value="GPS location not captured yet" readonly></div><label class="field full">Specific inspector <small>(only used for Specific assign)</small><select name="inspectorName"><option value="">Select inspector</option>${inspectors.map(inspector=>`<option value="${esc(inspector.name)}">${esc(inspector.name)} · ${esc(inspector.role)} · workload ${inspector.workload}</option>`).join('')}</select></label></div><div class="assignment-choice"><b>Choose assignment method</b><span>Auto-assignment is fair by design; specific assignment is recorded in the audit trail.</span></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="secondary assignment-button" type="submit" value="specific">Assign to selected inspector</button><button class="primary" type="submit" value="auto">✦ Auto-assign fairly</button></div></form>`}
 function notificationsModal(){return `<h2>Notifications</h2><p>Latest system alerts and inspection activity.</p><div class="notification-list">${state.data.alerts.map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${esc(a.time)}</time></div>`).join('')||'<div class="empty">You have no new notifications.</div>'}</div>`}
@@ -964,4 +1039,12 @@ async function initInspectionMap(){
     el.innerHTML='<div class="map-fallback">Map service unavailable. GPS coordinates can still be captured and included in the report.</div>';
   }
 }
-$('#date').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});const mobileCctvParams=new URLSearchParams(location.search);if(mobileCctvParams.get('mobileCctv'))showMobileCctvPhone(mobileCctvParams.get('mobileCctv'),mobileCctvParams.get('slot'));else if(sessionStorage.saarthiToken)load();else showLanding();
+if ($('#date')) {
+  $('#date').textContent = typeof window.formatDashboardDateIST === 'function' 
+    ? window.formatDashboardDateIST() 
+    : new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+}
+if (typeof window.startRelativeTimeTicker === 'function') {
+  window.startRelativeTimeTicker();
+}
+const mobileCctvParams=new URLSearchParams(location.search);if(mobileCctvParams.get('mobileCctv'))showMobileCctvPhone(mobileCctvParams.get('mobileCctv'),mobileCctvParams.get('slot'));else if(sessionStorage.saarthiToken)load();else showLanding();
