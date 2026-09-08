@@ -59,6 +59,60 @@ try {
   console.warn('[Socket.io Notice]', e.message);
 }
 
+async function load(){
+  if(!sessionStorage.saarthiUser){
+    sessionStorage.saarthiUser=JSON.stringify({name:'Arjun Mehta',employeeId:'GOV-2026-1001',role:'PMU Inspector'});
+  }
+  const r=await api('/api/dashboard');
+  if(r.status===401){
+    delete sessionStorage.saarthiToken;
+    delete sessionStorage.saarthiUser;
+    showAuth();
+    return;
+  }
+  state.data=await r.json();
+  dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats,logs:state.data.logs});
+  if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';
+  render();
+}
+
+function startDashboardSync(){
+  if(dashboardSyncTimer)return;
+  dashboardSyncTimer=setInterval(async()=>{
+    if(!sessionStorage.saarthiToken||state.view==='cctv')return;
+    try{
+      const r=await api('/api/dashboard',{cache:'no-store'});
+      if(!r.ok)return;
+      const next=await r.json(),fingerprint=JSON.stringify({sites:next.sites,inspections:next.inspections,stats:next.stats,logs:next.logs});
+      if(fingerprint!==dashboardFingerprint){
+        state.data=next;
+        dashboardFingerprint=fingerprint;
+        render();
+        if(state.view!=='logs')showToast('Dashboard updated with the latest project information.');
+      }
+    }catch{}
+  },5000);
+}
+
+function overview(){
+  const d=state.data || {};
+  const stats=d.stats || { monitored: 0, live: 0, inspections: 0, compliance: 0 };
+  const alerts=d.alerts || [];
+  const inspectionsList=d.inspections || [];
+  return `<div class="stats"><div class="card"><div class="stat-label">Registered projects</div><div class="stat-value">${stats.monitored}</div><span class="trend">Live data from registered organisations</span></div><div class="card"><div class="stat-label">CCTV feeds live</div><div class="stat-value">${stats.live}<small style="font-size:13px;color:var(--muted)"> / ${stats.monitored}</small></div><span class="trend">Authorized field devices only</span></div><button class="card dashboard-link" data-view-go="inspections"><div class="stat-label">Open inspections</div><div class="stat-value">${stats.inspections}</div><span class="trend down">Open inspection workspace →</span></button><div class="card"><div class="stat-label">Average compliance</div><div class="stat-value">${stats.compliance}%</div><span class="trend">Calculated from registered projects</span></div></div><div class="grid"><div class="card"><div class="card-head"><h2>Project location map</h2><button class="text-btn" data-view-go="projects">View projects →</button></div><div id="india-project-map" class="real-map" aria-label="Map showing registered project locations"></div><div class="map-legend"><span class="map-high">●</span> High risk <span class="map-medium">●</span> Medium risk <span class="map-low">●</span> Low risk <span class="map-pending">●</span> Pending review</div></div><div class="card"><div class="card-head"><h2>Priority alerts</h2><button class="text-btn" data-view-go="reports">View all</button></div>${alerts.slice(0,3).map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${a.time}</time></div>`).join('')||'<div class="empty">No active alerts.</div>'}</div></div><div class="card section"><div class="card-head"><h2>Inspection queue</h2><button class="text-btn" data-view-go="inspections">Manage inspections →</button></div>${inspectionsList.length?inspectionTable(inspectionsList.slice(0,3)):'<div class="empty">No inspections are assigned. Create one from the Inspections page.</div>'}</div>`;
+}
+
+function inspectionTable(items,showActions=false){
+  return `<table class="table"><thead><tr><th>INSPECTION</th><th>ASSIGNED TO</th><th>WHEN</th><th>PRIORITY</th><th>STATUS</th>${showActions?'<th>ACTION</th>':''}</tr></thead><tbody>${(items||[]).map(i=>`<tr><td><strong>${esc(i.site)}</strong><br><small style="color:var(--muted)">${esc(i.id)}</small></td><td>${esc(i.inspector)}</td><td>${esc(i.due)}</td><td>${badge(i.priority)}</td><td>${badge(i.status)}</td>${showActions?`<td>${i.status==='Assigned'?`<button class="secondary start-ground" data-start-inspection="${esc(i.id)}">Start on ground</button>`:i.status==='In progress'?'<span class="ground-live">● On ground</span>':'<span class="report-ready">Report submitted</span>'}</td>`:''}</tr>`).join('')}</tbody></table>`;
+}
+
+function projects(){
+  const d=state.data || {};
+  const sitesList=d.sites || [];
+  const states=[...new Set(sitesList.map(s=>s.state))].sort(),available=sitesList.filter(s=>!s.inspectionAssigned);
+  return `<div class="project-toolbar"><div><span class="state-label">STATE / UT</span><select id="state-filter" class="state-filter"><option value="">All States & UTs</option>${states.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}</select></div><div id="state-summary" class="state-summary">${available.length} projects available for inspection</div></div><input class="filter" id="search" placeholder="Search within selected state by project, district, or scheme…"><div class="project-grid" id="projects-grid">${projectCards(available)}</div>`;
+}
+
 function formatRelativeOrDate(ts){
   if (typeof window.formatRelativeIST === 'function') {
     return window.formatRelativeIST(ts);
