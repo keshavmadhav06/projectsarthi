@@ -1,5 +1,5 @@
-const CACHE_NAME = 'saarthi-shell-v2';
-const APP_SHELL = ['/', '/styles.css', '/app.js', '/manifest.webmanifest', '/icons/saarthi-icon.svg'];
+const CACHE_NAME = 'saarthi-shell-v3';
+const APP_SHELL = ['/', '/styles.css', '/features.css', '/ist-utils.js', '/app.js', '/manifest.webmanifest', '/icons/saarthi-icon.svg'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(APP_SHELL)));
