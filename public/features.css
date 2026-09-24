@@ -1,0 +1,434 @@
+/* =======================================================
+   SAARTHI PLATFORM MASTER FEATURES STYLES
+   Chatbot with TTS, Geo-Tagging, Attendance, Livestreaming
+   ======================================================= */
+
+/* --- AI Chatbot Floating Widget --- */
+#saarthi-chatbot-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.saarthi-chat-fab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #093b2f, #167d59);
+  color: #fff;
+  border: 0;
+  padding: 12px 18px;
+  border-radius: 50px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(9, 59, 47, 0.35);
+  transition: all 0.25s ease;
+  position: relative;
+}
+
+.saarthi-chat-fab:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px rgba(9, 59, 47, 0.45);
+}
+
+.chat-fab-icon {
+  font-size: 18px;
+}
+
+.chat-fab-pulse {
+  width: 8px;
+  height: 8px;
+  background: #d5f36a;
+  border-radius: 50%;
+  animation: chatPulse 2s infinite;
+}
+
+@keyframes chatPulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(213, 243, 106, 0.7); }
+  70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(213, 243, 106, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(213, 243, 106, 0); }
+}
+
+.saarthi-chat-window {
+  position: absolute;
+  bottom: 60px;
+  right: 0;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  height: 520px;
+  max-height: calc(100vh - 100px);
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 16px 40px rgba(11, 42, 34, 0.22);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid #dbe6ea;
+  animation: chatSlideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes chatSlideUp {
+  from { opacity: 0; transform: translateY(16px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.chat-header {
+  background: linear-gradient(135deg, #093b2f, #12543e);
+  color: #fff;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-header-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chat-avatar {
+  width: 32px;
+  height: 32px;
+  background: #d5f36a;
+  color: #093b2f;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  font-size: 16px;
+}
+
+.chat-header-info b {
+  display: block;
+  font-size: 14px;
+}
+
+.chat-header-info small {
+  display: block;
+  font-size: 11px;
+  color: #a3d4bf;
+}
+
+.chat-header-actions button {
+  background: transparent;
+  border: 0;
+  color: #d2ebe0;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.chat-header-actions button:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.chat-body {
+  flex: 1;
+  padding: 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #f8faf9;
+}
+
+.chat-msg {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+
+.chat-msg.user {
+  align-self: flex-end;
+}
+
+.chat-msg.assistant {
+  align-self: flex-start;
+}
+
+.chat-msg.user .chat-bubble {
+  background: #167d59;
+  color: #ffffff;
+  border-radius: 14px 14px 2px 14px;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.chat-msg.assistant .chat-bubble {
+  background: #ffffff;
+  color: #173b5e;
+  border-radius: 14px 14px 14px 2px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e1e9e5;
+}
+
+.chat-bubble p {
+  margin: 0 0 6px 0;
+}
+
+.chat-bubble p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-tts-btn {
+  background: #edf7f2;
+  border: 1px solid #c2e2d3;
+  color: #167d59;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 4px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-tts-btn:hover {
+  background: #d8f0e3;
+}
+
+.chat-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.chat-chip {
+  background: #eff6f3;
+  border: 1px solid #d4e7de;
+  color: #145941;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.chat-chip:hover {
+  background: #167d59;
+  color: #ffffff;
+}
+
+.chat-footer {
+  padding: 10px 12px;
+  background: #ffffff;
+  border-top: 1px solid #e1e9e5;
+}
+
+.chat-form {
+  display: flex;
+  gap: 8px;
+}
+
+.chat-form input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid #d4deda;
+  border-radius: 24px;
+  font-size: 13px;
+  outline: none;
+  font-family: inherit;
+}
+
+.chat-form input:focus {
+  border-color: #167d59;
+}
+
+.chat-send-btn {
+  background: #167d59;
+  color: #fff;
+  border: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  transition: background 0.15s ease;
+}
+
+.chat-send-btn:hover {
+  background: #093b2f;
+}
+
+/* --- Geo-Tagging on Audit Logs --- */
+.log-geo-btn {
+  background: #eef6fc;
+  border: 1px solid #c9e0f3;
+  color: #1a5ca8;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  transition: all 0.15s ease;
+}
+
+.log-geo-btn:hover {
+  background: #1a5ca8;
+  color: #ffffff;
+}
+
+.badge-onsite-pill {
+  background: #e7f7ed;
+  color: #13804b;
+  border: 1px solid #bce6ce;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+/* --- Notification Bell Counter Badge --- */
+.icon-btn {
+  position: relative;
+}
+
+.notif-counter {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  background: #b8312f;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  min-width: 17px;
+  height: 17px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  padding: 0 4px;
+  box-shadow: 0 2px 6px rgba(184, 49, 47, 0.4);
+}
+
+.icon-btn.has-alerts {
+  color: #b8312f;
+}
+
+/* --- Attendance Portal Styles --- */
+.attendance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 18px;
+}
+
+.attendance-card {
+  background: #ffffff;
+  padding: 22px;
+  border-radius: 12px;
+  border: 1px solid #dce6eb;
+}
+
+.attendance-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.attendance-table th, .attendance-table td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid #ebf1f4;
+}
+
+.attendance-table th {
+  background: #f7fafc;
+  color: #5c7280;
+  font-weight: 700;
+}
+
+/* --- Live Video Monitoring Stream --- */
+.stream-container {
+  position: relative;
+  background: #071927;
+  border-radius: 12px;
+  overflow: hidden;
+  margin-top: 16px;
+  min-height: 380px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+}
+
+.stream-video {
+  width: 100%;
+  height: 100%;
+  max-height: 480px;
+  object-fit: contain;
+}
+
+.stream-overlay-bar {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.stream-status-pill {
+  background: rgba(19, 128, 75, 0.9);
+  color: #fff;
+  font-weight: 800;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.stream-status-pill.offline {
+  background: rgba(84, 117, 141, 0.85);
+}
+
+.stream-pulse-dot {
+  width: 8px;
+  height: 8px;
+  background: #52e396;
+  border-radius: 50%;
+  animation: streamPulse 1.5s infinite;
+}
+
+@keyframes streamPulse {
+  0% { opacity: 0.4; }
+  50% { opacity: 1; }
+  100% { opacity: 0.4; }
+}
+
+.stream-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+@media (max-width: 768px) {
+  .attendance-grid {
+    grid-template-columns: 1fr;
+  }
+}

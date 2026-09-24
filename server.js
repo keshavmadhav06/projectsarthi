@@ -11,7 +11,12 @@ const Project = require('./models/Project');
 const ChecklistItem = require('./models/ChecklistItem');
 const AuditLog = require('./models/AuditLog');
 const User = require('./models/User');
+const AttendanceRecord = require('./models/AttendanceRecord');
+const Notification = require('./models/Notification');
+const Settings = require('./models/Settings');
 const { formatToIST, formatRelativeIST, logServerTime } = require('./utils/istTime');
+const { checkComplianceAnomaly, checkAttendanceAnomaly, getSettings } = require('./utils/anomalyDetector');
+const { handleChatbotMessage } = require('./utils/chatbot');
 
 const app = express();
 const server = http.createServer(app);
@@ -28,13 +33,14 @@ app.use(express.urlencoded({ extended: true, limit: '6mb' }));
 
 // In-memory runtime state for fast access & non-DB fallback
 let memorySites = JSON.parse(JSON.stringify(initialSites));
-let memoryLogs = JSON.parse(JSON.stringify(initialLogs));
+let memoryLogs = []; // Empty: populated strictly by real events
 let memoryInspections = [];
-let memoryAlerts = [
-  { id: 'AL-102', type: 'Attendance anomaly', site: 'Udaan Skill Centre (sample)', text: 'Sample alert: attendance needs human review.', severity: 'warning', time: 'Demo' }
-];
+let memoryAlerts = []; // Real anomaly alerts only
 let memoryReports = [];
 let memoryFeedback = [];
+let memoryAttendance = [];
+let memoryNotifications = [];
+const streamStatusMap = new Map();
 let memoryEmployees = JSON.parse(JSON.stringify(initialUsers));
 let memoryPartnerAccounts = [
   { organisation: 'Udaan Skill Centre', registrationId: 'NGO/2026/1001', email: 'udan@dosje-demo.org', password: 'Saarthi@2026', role: 'Project / NGO Administrator' }
@@ -278,9 +284,10 @@ app.use('/api', (req, res, next) => {
     '/auth/signup', '/auth/verify', '/auth/login',
     '/partner/signup', '/partner/verify', '/partner/login',
     '/feedback',
-    '/mobile-cctv/room', '/mobile-cctv/signal', '/mobile-cctv/signals', '/mobile-cctv/frame'
+    '/mobile-cctv/room', '/mobile-cctv/signal', '/mobile-cctv/signals', '/mobile-cctv/frame',
+    '/chatbot/message', '/settings'
   ];
-  if (publicPaths.some(p => req.path === p)) return next();
+  if (publicPaths.some(p => req.path === p || req.path.startsWith('/stream/'))) return next();
   if (!sessionUser(req)) return res.status(401).json({ error: 'Authentication required.' });
   next();
 });
@@ -291,6 +298,7 @@ app.use('/api', (req, res, next) => {
 app.get('/api/dashboard', async (req, res) => {
   let sites = memorySites;
   let logs = memoryLogs;
+  let alerts = memoryNotifications;
 
   if (isDBConnected()) {
     try {
@@ -303,6 +311,8 @@ app.get('/api/dashboard', async (req, res) => {
       }
       const dbLogs = await AuditLog.find({}).sort({ timestamp: -1 }).limit(50).lean();
       if (dbLogs && dbLogs.length) logs = dbLogs;
+      const dbNotifs = await Notification.find({ status: 'active' }).sort({ createdAt: -1 }).limit(10).lean();
+      if (dbNotifs && dbNotifs.length) alerts = dbNotifs;
     } catch (e) {
       console.warn('[DB Dashboard Fetch Error]', e.message);
     }
@@ -315,10 +325,19 @@ app.get('/api/dashboard', async (req, res) => {
     relativeIST: formatRelativeIST(l.timestamp)
   }));
 
+  const formattedAlerts = alerts.map(a => ({
+    id: a.id,
+    type: a.ruleTriggered || a.type || 'Anomaly Alert',
+    site: a.projectName || a.site || 'Registered Project',
+    text: a.message || a.text || 'System compliance notification',
+    severity: a.severity || 'warning',
+    time: formatRelativeIST(a.createdAt || new Date())
+  }));
+
   return res.json({
     sites,
     inspections: memoryInspections,
-    alerts: memoryAlerts,
+    alerts: formattedAlerts,
     reports: memoryReports,
     feedback: memoryFeedback,
     logs: formattedLogs,
@@ -400,6 +419,9 @@ app.put('/api/projects/:id/checklist', async (req, res) => {
   const actorName = `${user.name} (${user.role})`;
 
   if (data.logEntry) {
+    const loc = data.location || data.logEntry.location || null;
+    const locCaptured = Boolean((loc && Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude)) || data.locationCaptured || data.logEntry.locationCaptured);
+
     newLogEntry = {
       id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
       timestamp: new Date(), // stored as UTC Date
@@ -409,6 +431,14 @@ app.put('/api/projects/:id/checklist', async (req, res) => {
       actionType: data.logEntry.actionType || 'checklist',
       actorId: user.employeeId || 'GOV-2026-1001',
       actorName: actorName,
+      locationCaptured: locCaptured,
+      location: locCaptured ? {
+        latitude: Number(loc.latitude),
+        longitude: Number(loc.longitude),
+        accuracy: Number(loc.accuracy) || 15,
+        capturedAt: loc.capturedAt ? new Date(loc.capturedAt) : new Date()
+      } : null,
+      isInspectionOnSite: Boolean(data.isInspectionOnSite || data.logEntry.isInspectionOnSite),
       ...data.logEntry
     };
     memoryLogs.unshift(newLogEntry);
@@ -434,6 +464,9 @@ app.put('/api/projects/:id/checklist', async (req, res) => {
       console.warn('[DB Project Update Error]', e.message);
     }
   }
+
+  // Check compliance anomalies & dispatch alerts
+  checkComplianceAnomaly({ project, oldScore, newScore: serverScore, io, isDBConnected, memoryNotifications, memoryLogs }).catch(e => console.warn('[Anomaly Error]', e.message));
 
   // Real-time broadcast to all connected clients via Socket.io
   const broadcastPayload = {
@@ -504,6 +537,9 @@ app.post('/api/projects/:id/custom-item', async (req, res) => {
   project.score = newScore;
   project.lastUpdated = new Date().toISOString();
 
+  const loc = req.body.location || null;
+  const locCaptured = Boolean((loc && Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude)) || req.body.locationCaptured);
+
   const actorName = `${user.name} (${user.role})`;
   const logEntry = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
@@ -518,7 +554,15 @@ app.post('/api/projects/:id/custom-item', async (req, res) => {
     oldValue: '',
     newValue: newItem.text.slice(0, 45) + (newItem.text.length > 45 ? '…' : ''),
     delta: delta !== 0 ? (delta > 0 ? `+${delta}%` : `${delta}%`) : '',
-    description: `Custom checklist item added to ${cat.category} by ${user.name}: "${newItem.text}" (weights rescaled to 25%)`
+    description: `Custom checklist item added to ${cat.category} by ${user.name}: "${newItem.text}" (weights rescaled to 25%)`,
+    locationCaptured: locCaptured,
+    location: locCaptured ? {
+      latitude: Number(loc.latitude),
+      longitude: Number(loc.longitude),
+      accuracy: Number(loc.accuracy) || 15,
+      capturedAt: loc.capturedAt ? new Date(loc.capturedAt) : new Date()
+    } : null,
+    isInspectionOnSite: Boolean(req.body.isInspectionOnSite)
   };
   memoryLogs.unshift(logEntry);
 
@@ -538,6 +582,9 @@ app.post('/api/projects/:id/custom-item', async (req, res) => {
       await AuditLog.create(logEntry);
     } catch (e) { console.warn('[DB Custom Item Insert Error]', e.message); }
   }
+
+  // Check compliance anomalies
+  checkComplianceAnomaly({ project, oldScore, newScore, io, isDBConnected, memoryNotifications, memoryLogs }).catch(e => console.warn('[Anomaly Error]', e.message));
 
   // Socket.io Broadcast
   io.emit('checklist:updated', {
@@ -599,6 +646,9 @@ app.delete('/api/projects/:id/custom-item/:itemId', async (req, res) => {
   project.score = newScore;
   project.lastUpdated = new Date().toISOString();
 
+  const loc = req.body.location || null;
+  const locCaptured = Boolean((loc && Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude)) || req.body.locationCaptured);
+
   const actorName = `${user.name} (${user.role})`;
   const logEntry = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
@@ -613,7 +663,15 @@ app.delete('/api/projects/:id/custom-item/:itemId', async (req, res) => {
     oldValue: targetItem.text.slice(0, 45) + (targetItem.text.length > 45 ? '…' : ''),
     newValue: '',
     delta: delta !== 0 ? (delta > 0 ? `+${delta}%` : `${delta}%`) : '',
-    description: `Custom checklist item deleted by ${user.name}: "${targetItem.text}" (category weights re-normalized)`
+    description: `Custom checklist item deleted by ${user.name}: "${targetItem.text}" (category weights re-normalized)`,
+    locationCaptured: locCaptured,
+    location: locCaptured ? {
+      latitude: Number(loc.latitude),
+      longitude: Number(loc.longitude),
+      accuracy: Number(loc.accuracy) || 15,
+      capturedAt: loc.capturedAt ? new Date(loc.capturedAt) : new Date()
+    } : null,
+    isInspectionOnSite: Boolean(req.body.isInspectionOnSite)
   };
   memoryLogs.unshift(logEntry);
 
@@ -624,6 +682,9 @@ app.delete('/api/projects/:id/custom-item/:itemId', async (req, res) => {
       await AuditLog.create(logEntry);
     } catch (e) { console.warn('[DB Custom Item Delete Error]', e.message); }
   }
+
+  // Check compliance anomalies
+  checkComplianceAnomaly({ project, oldScore, newScore, io, isDBConnected, memoryNotifications, memoryLogs }).catch(e => console.warn('[Anomaly Error]', e.message));
 
   // Socket.io Broadcast
   io.emit('checklist:updated', {
@@ -692,6 +753,9 @@ app.get('/api/logs', async (req, res) => {
 app.post('/api/logs', async (req, res) => {
   const data = req.body;
   const user = sessionUser(req) || { name: 'Arjun Mehta', role: 'PMU Inspector' };
+  const loc = data.location || null;
+  const locCaptured = Boolean((loc && Number.isFinite(loc.latitude) && Number.isFinite(loc.longitude)) || data.locationCaptured);
+
   const entry = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
     timestamp: new Date(),
@@ -705,7 +769,15 @@ app.post('/api/logs', async (req, res) => {
     newValue: data.newValue || '',
     delta: data.delta || '',
     description: data.description || '',
-    field: data.field || ''
+    field: data.field || '',
+    locationCaptured: locCaptured,
+    location: locCaptured ? {
+      latitude: Number(loc.latitude),
+      longitude: Number(loc.longitude),
+      accuracy: Number(loc.accuracy) || 15,
+      capturedAt: loc.capturedAt ? new Date(loc.capturedAt) : new Date()
+    } : null,
+    isInspectionOnSite: Boolean(data.isInspectionOnSite)
   };
   memoryLogs.unshift(entry);
 
@@ -727,7 +799,7 @@ app.post('/api/logs', async (req, res) => {
 // ==========================================
 // Inspections & Assignments
 // ==========================================
-app.post('/api/assign', (req, res) => {
+app.post('/api/assign', async (req, res) => {
   const data = req.body;
   const riskOrder = { High: 0, Medium: 1, Low: 2, 'Pending review': 3 };
   const availableSites = memorySites.filter(s => !s.inspectionAssigned);
@@ -766,6 +838,7 @@ app.post('/api/assign', (req, res) => {
   };
   memoryInspections.unshift(record);
 
+  const coords = parseCoordinates(data.location);
   const logEntry = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
     timestamp: new Date(),
@@ -777,9 +850,21 @@ app.post('/api/assign', (req, res) => {
     field: 'Inspection Assignment',
     oldValue: 'Unassigned',
     newValue: 'Assigned',
-    description: `Inspection ${record.id} assigned to ${inspector.name} (${assignmentBasis})`
+    description: `Inspection ${record.id} assigned to ${inspector.name} (${assignmentBasis})`,
+    isInspectionOnSite: true,
+    locationCaptured: Boolean(coords),
+    location: coords ? { latitude: coords[0], longitude: coords[1], accuracy: 25, capturedAt: new Date() } : null
   };
   memoryLogs.unshift(logEntry);
+
+  if (isDBConnected()) {
+    try {
+      await AuditLog.create(logEntry);
+    } catch (e) {
+      console.warn('[DB Assign Log Error]', e.message);
+    }
+  }
+
   io.emit('audit:new_entry', {
     ...logEntry,
     formattedIST: formatToIST(logEntry.timestamp),
@@ -789,20 +874,54 @@ app.post('/api/assign', (req, res) => {
   return res.status(201).json({ id: record.id, inspector: inspector.name, assignmentBasis });
 });
 
-app.post('/api/inspections/start', (req, res) => {
+app.post('/api/inspections/start', async (req, res) => {
   const { inspectionId } = req.body;
   const inspection = memoryInspections.find(item => item.id === inspectionId);
   if (!inspection) return res.status(404).json({ error: 'Inspection not found.' });
   if (inspection.status !== 'Assigned') return res.status(409).json({ error: `Inspection is already ${inspection.status.toLowerCase()}.` });
   inspection.status = 'In progress';
   inspection.startedAt = new Date().toISOString();
+
+  const user = sessionUser(req) || { name: 'Arjun Mehta', role: 'PMU Inspector' };
+  const logEntry = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: new Date(),
+    projectId: inspection.siteId,
+    projectName: inspection.site,
+    state: '',
+    actionType: 'inspection_started',
+    actorId: user.employeeId || 'GOV-2026-1001',
+    actorName: `${user.name} (${user.role || 'PMU Inspector'})`,
+    field: 'Inspection Status',
+    oldValue: 'Assigned',
+    newValue: 'In progress',
+    description: `On-ground inspection ${inspection.id} started for ${inspection.site} by ${inspection.inspector}`,
+    isInspectionOnSite: true,
+    locationCaptured: false
+  };
+  memoryLogs.unshift(logEntry);
+
+  if (isDBConnected()) {
+    try {
+      await AuditLog.create(logEntry);
+    } catch (e) {
+      console.warn('[DB Inspection Start Log Error]', e.message);
+    }
+  }
+
+  io.emit('audit:new_entry', {
+    ...logEntry,
+    formattedIST: formatToIST(logEntry.timestamp),
+    relativeIST: formatRelativeIST(logEntry.timestamp)
+  });
+
   return res.json({ ok: true, inspection });
 });
 
-app.post('/api/reports', (req, res) => {
+app.post('/api/reports', async (req, res) => {
   const data = req.body;
   const inspection = data.inspectionId ? memoryInspections.find(i => i.id === data.inspectionId) : null;
-  const site = memorySites.find(s => s.name === data.site) || { lat: 20.5937, lng: 78.9629, state: '' };
+  const site = memorySites.find(s => s.name === data.site) || { lat: 20.5937, lng: 78.9629, state: '', id: 'P-General' };
   const user = sessionUser(req) || { name: 'Arjun Mehta' };
   const evidence = storedEvidence(data.evidence);
   if (evidence?.error) return res.status(400).json({ error: evidence.error });
@@ -826,7 +945,42 @@ app.post('/api/reports', (req, res) => {
   };
   memoryReports.unshift(report);
   if (inspection) inspection.status = 'Completed';
-  return res.status(201).json({ ok: true, report });
+
+  // Create real AuditLog for submitted report
+  const logEntry = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: new Date(),
+    projectId: inspection?.siteId || site.id,
+    projectName: data.site,
+    state: site.state || '',
+    actionType: 'report_submitted',
+    actorId: user.employeeId || 'GOV-2026-1001',
+    actorName: `${user.name} (${user.role || 'PMU Inspector'})`,
+    field: 'Verified Inspection Report',
+    oldValue: 'In progress',
+    newValue: data.finding || 'Compliance observed',
+    description: `Official verified report submitted for ${data.site}: ${data.finding || 'Compliant'}${flags.length ? ' (Geo-fence flag)' : ''}`,
+    isInspectionOnSite: true,
+    locationCaptured: Boolean(coords),
+    location: coords ? { latitude: coords[0], longitude: coords[1], accuracy: 15, capturedAt: new Date() } : null
+  };
+  memoryLogs.unshift(logEntry);
+
+  if (isDBConnected()) {
+    try {
+      await AuditLog.create(logEntry);
+    } catch (e) {
+      console.warn('[DB Report Log Error]', e.message);
+    }
+  }
+
+  io.emit('audit:new_entry', {
+    ...logEntry,
+    formattedIST: formatToIST(logEntry.timestamp),
+    relativeIST: formatRelativeIST(logEntry.timestamp)
+  });
+
+  return res.status(201).json({ ok: true, report, log: logEntry });
 });
 
 app.post('/api/vc', (req, res) => {
@@ -983,6 +1137,318 @@ app.get('/api/mobile-cctv/frame', (req, res) => {
   return res.json(frame || { image: null, updatedAt: null });
 });
 
+// ==========================================
+// Attendance Portal Endpoints
+// ==========================================
+app.get('/api/attendance/:projectId', async (req, res) => {
+  const { projectId } = req.params;
+  let records = memoryAttendance.filter(r => r.projectId === projectId);
+  if (isDBConnected()) {
+    try {
+      const dbRecords = await AttendanceRecord.find({ projectId }).sort({ date: -1, createdAt: -1 }).limit(60).lean();
+      if (dbRecords && dbRecords.length) records = dbRecords;
+    } catch (e) {}
+  }
+  const todayStr = new Date().toISOString().split('T')[0];
+  const todayRecord = records.find(r => r.date === todayStr);
+
+  return res.json({
+    projectId,
+    todayRecord: todayRecord || null,
+    records: records.slice(0, 30),
+    totalCount: records.length
+  });
+});
+
+app.post('/api/attendance', async (req, res) => {
+  const data = req.body;
+  const user = sessionUser(req) || { name: 'NGO Staff', role: 'Project / NGO Administrator' };
+  const { projectId, staffName, staffId, date, checkIn, checkOut, status, geoLocation } = data;
+
+  if (!projectId || !staffName || !date || !checkIn) {
+    return res.status(400).json({ error: 'Project ID, staff name, date, and check-in time are required.' });
+  }
+
+  // Validate date cannot be in the future
+  const selectedDate = new Date(date + 'T00:00:00Z');
+  const today = new Date();
+  today.setUTCHours(23, 59, 59, 999);
+  if (selectedDate > today) {
+    return res.status(400).json({ error: 'Attendance cannot be marked for a future date.' });
+  }
+
+  const project = memorySites.find(s => s.id === projectId);
+  if (!project) return res.status(404).json({ error: 'Project not found.' });
+
+  const recordId = 'ATT-' + Math.floor(1000 + Math.random() * 9000);
+  const locCaptured = Boolean(geoLocation?.captured || (geoLocation?.latitude && geoLocation?.longitude));
+
+  const record = {
+    id: recordId,
+    projectId,
+    projectName: project.name,
+    staffName: String(staffName).trim(),
+    staffId: String(staffId || '').trim(),
+    date,
+    checkIn,
+    checkOut: checkOut || '',
+    status: status || 'Present',
+    geoLocation: {
+      captured: locCaptured,
+      latitude: locCaptured ? Number(geoLocation.latitude) : null,
+      longitude: locCaptured ? Number(geoLocation.longitude) : null,
+      accuracy: locCaptured ? Number(geoLocation.accuracy) || 10 : null,
+      capturedAt: locCaptured ? new Date(geoLocation.capturedAt || Date.now()) : null
+    },
+    submittedBy: `${user.name} (${user.role})`,
+    createdAt: new Date()
+  };
+
+  memoryAttendance.unshift(record);
+
+  // Compute updated project attendance % from rolling records
+  const projectRecords = memoryAttendance.filter(r => r.projectId === projectId);
+  let totalScoreWeight = 0;
+  projectRecords.slice(0, 30).forEach(r => {
+    if (r.status === 'Present') totalScoreWeight += 1;
+    else if (r.status === 'Half-day' || r.status === 'Late') totalScoreWeight += 0.5;
+  });
+  const sampleCount = Math.min(projectRecords.length, 30);
+  const oldAttendance = project.attendance || 60;
+  const newAttendance = sampleCount > 0 ? Math.round((totalScoreWeight / sampleCount) * 100) : oldAttendance;
+  project.attendance = newAttendance;
+
+  // Create real AuditLog entry
+  const logEntry = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: new Date(),
+    projectId: project.id,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'attendance_submitted',
+    actorId: user.employeeId || 'NGO-STAFF',
+    actorName: `${user.name} (${user.role})`,
+    field: 'Staff Attendance Marked',
+    oldValue: `${oldAttendance}%`,
+    newValue: `${newAttendance}%`,
+    delta: `${newAttendance - oldAttendance > 0 ? '+' : ''}${newAttendance - oldAttendance}%`,
+    description: `Attendance marked for ${record.staffName} (${record.status}). Rolling attendance updated to ${newAttendance}%.`,
+    locationCaptured: locCaptured,
+    location: locCaptured ? record.geoLocation : null,
+    isInspectionOnSite: false
+  };
+  memoryLogs.unshift(logEntry);
+
+  if (isDBConnected()) {
+    try {
+      await AttendanceRecord.create(record);
+      await Project.findOneAndUpdate({ id: projectId }, { attendance: newAttendance });
+      await AuditLog.create(logEntry);
+    } catch (e) {
+      console.warn('[DB Attendance Record Error]', e.message);
+    }
+  }
+
+  // Check attendance anomaly
+  checkAttendanceAnomaly({ project, oldAttendance, newAttendance, io, isDBConnected, memoryNotifications, memoryLogs }).catch(e => console.warn('[Attendance Anomaly Error]', e.message));
+
+  io.emit('project:attendance_updated', { projectId, attendance: newAttendance });
+  io.emit('audit:new_entry', {
+    ...logEntry,
+    formattedIST: formatToIST(logEntry.timestamp),
+    relativeIST: formatRelativeIST(logEntry.timestamp)
+  });
+
+  return res.status(201).json({
+    ok: true,
+    record,
+    attendanceScore: newAttendance,
+    projectAttendance: newAttendance,
+    log: logEntry
+  });
+});
+
+// ==========================================
+// Anomaly Alerts & Settings Endpoints
+// ==========================================
+app.get('/api/notifications', async (req, res) => {
+  let notifs = memoryNotifications;
+  if (isDBConnected()) {
+    try {
+      const dbNotifs = await Notification.find({}).sort({ createdAt: -1 }).limit(40).lean();
+      if (dbNotifs && dbNotifs.length) notifs = dbNotifs;
+    } catch (e) {}
+  }
+  const formatted = notifs.map(n => ({
+    ...n,
+    createdAtIST: formatToIST(n.createdAt),
+    relativeIST: formatRelativeIST(n.createdAt)
+  }));
+  const unresolvedCount = formatted.filter(n => !n.resolved && n.status !== 'resolved').length;
+  return res.json({ notifications: formatted, unresolvedCount });
+});
+
+app.put('/api/notifications/:id/resolve', async (req, res) => {
+  const { id } = req.params;
+  const { notes } = req.body || {};
+  const user = sessionUser(req) || { name: 'Arjun Mehta' };
+  const target = memoryNotifications.find(n => n.id === id || n._id == id);
+  if (target) {
+    target.resolved = true;
+    target.status = 'resolved';
+    target.resolvedAt = new Date();
+    target.resolvedBy = user.name;
+    target.resolutionNotes = notes || 'Resolved via dashboard';
+  }
+  if (isDBConnected()) {
+    try {
+      await Notification.findOneAndUpdate(
+        { $or: [{ id }, { _id: id }] },
+        { resolved: true, status: 'resolved', resolvedAt: new Date(), resolvedBy: user.name, resolutionNotes: notes || 'Resolved via dashboard' }
+      );
+    } catch (e) {}
+  }
+  io.emit('notification:resolved', { id, resolvedBy: user.name, resolutionNotes: notes });
+  return res.json({ ok: true, notification: target || { id, resolved: true, status: 'resolved' } });
+});
+
+app.get('/api/settings', async (req, res) => {
+  const settings = await getSettings();
+  return res.json({ settings });
+});
+
+app.put('/api/settings', async (req, res) => {
+  const data = req.body;
+  if (isDBConnected()) {
+    try {
+      const updated = await Settings.findOneAndUpdate(
+        { id: 'global_settings' },
+        { ...data, updatedAt: new Date() },
+        { upsert: true, new: true }
+      );
+      return res.json({ ok: true, settings: updated });
+    } catch (e) {}
+  }
+  return res.json({ ok: true, settings: data });
+});
+
+// ==========================================
+// AI Chatbot Assistant (Gemini API)
+// ==========================================
+app.post('/api/chatbot/message', async (req, res) => {
+  const user = sessionUser(req) || { name: 'Officer', role: 'PMU Inspector' };
+  const token = (req.headers.authorization || '').replace('Bearer ', '') || user.employeeId || 'default-session';
+  const { message } = req.body;
+
+  let sites = memorySites;
+  let logs = memoryLogs;
+  let alerts = [];
+
+  if (isDBConnected()) {
+    try {
+      const dbSites = await Project.find({}).lean();
+      if (dbSites && dbSites.length) sites = dbSites;
+      const dbLogs = await AuditLog.find({}).sort({ timestamp: -1 }).limit(20).lean();
+      if (dbLogs && dbLogs.length) logs = dbLogs;
+      const dbNotifs = await Notification.find({ status: 'active' }).sort({ createdAt: -1 }).limit(10).lean();
+      if (dbNotifs && dbNotifs.length) alerts = dbNotifs;
+    } catch (e) {}
+  }
+
+  const formattedLogs = logs.map(l => ({
+    ...l,
+    formattedIST: formatToIST(l.timestamp),
+    relativeIST: formatRelativeIST(l.timestamp)
+  }));
+
+  const result = await handleChatbotMessage({
+    token,
+    message,
+    dbContext: { sites, logs: formattedLogs, alerts },
+    user
+  });
+
+  return res.json(result);
+});
+
+// ==========================================
+// Livestream Status Endpoints
+// ==========================================
+app.get('/api/stream/:projectId/status', (req, res) => {
+  const { projectId } = req.params;
+  const status = streamStatusMap.get(projectId) || 'Offline';
+  return res.json({ projectId, status, isLive: status === 'Live' });
+});
+
+app.post('/api/stream/:projectId/start', async (req, res) => {
+  const { projectId } = req.params;
+  const { publisherName, location } = req.body;
+  streamStatusMap.set(projectId, 'Live');
+  const project = memorySites.find(s => s.id === projectId) || { name: projectId, state: '' };
+
+  const logEntry = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: new Date(),
+    projectId,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'stream_started',
+    actorName: `${publisherName || 'NGO Staff'} (Field Streamer)`,
+    field: 'Live Video Monitoring',
+    oldValue: 'Offline',
+    newValue: 'Live',
+    description: `Live video stream started for ${project.name}`,
+    locationCaptured: Boolean(location?.latitude && location?.longitude),
+    location: location || null,
+    isInspectionOnSite: false
+  };
+  memoryLogs.unshift(logEntry);
+  if (isDBConnected()) {
+    try { await AuditLog.create(logEntry); } catch(e){}
+  }
+  io.emit('audit:new_entry', {
+    ...logEntry,
+    formattedIST: formatToIST(logEntry.timestamp),
+    relativeIST: formatRelativeIST(logEntry.timestamp)
+  });
+  io.emit('stream:status', { projectId, status: 'Live', publisher: publisherName });
+  return res.json({ ok: true, status: 'Live', log: logEntry });
+});
+
+app.post('/api/stream/:projectId/stop', async (req, res) => {
+  const { projectId } = req.params;
+  const { publisherName } = req.body;
+  streamStatusMap.set(projectId, 'Offline');
+  const project = memorySites.find(s => s.id === projectId) || { name: projectId, state: '' };
+
+  const logEntry = {
+    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+    timestamp: new Date(),
+    projectId,
+    projectName: project.name,
+    state: project.state,
+    actionType: 'stream_stopped',
+    actorName: `${publisherName || 'NGO Staff'} (Field Streamer)`,
+    field: 'Live Video Monitoring',
+    oldValue: 'Live',
+    newValue: 'Offline',
+    description: `Live video stream ended for ${project.name}`,
+    locationCaptured: false,
+    isInspectionOnSite: false
+  };
+  memoryLogs.unshift(logEntry);
+  if (isDBConnected()) {
+    try { await AuditLog.create(logEntry); } catch(e){}
+  }
+  io.emit('audit:new_entry', {
+    ...logEntry,
+    formattedIST: formatToIST(logEntry.timestamp),
+    relativeIST: formatRelativeIST(logEntry.timestamp)
+  });
+  io.emit('stream:status', { projectId, status: 'Offline' });
+  return res.json({ ok: true, status: 'Offline', log: logEntry });
+});
+
 // Static Assets & SPA Fallback
 app.use(express.static(path.join(__dirname, 'public')));
 app.use((req, res) => {
@@ -992,6 +1458,95 @@ app.use((req, res) => {
 // Socket.io Connection Event
 io.on('connection', socket => {
   socket.emit('connected', { ok: true, socketId: socket.id, serverTimeIST: formatToIST(new Date()) });
+
+  // Livestream room & signaling
+  socket.on('stream:join', ({ projectId, role }) => {
+    socket.join(`stream:${projectId}`);
+    socket.emit('stream:status', {
+      projectId,
+      status: streamStatusMap.get(projectId) || 'Offline'
+    });
+  });
+
+  socket.on('stream:start', async ({ projectId, publisherName, location }) => {
+    streamStatusMap.set(projectId, 'Live');
+    io.to(`stream:${projectId}`).emit('stream:status', {
+      projectId,
+      status: 'Live',
+      publisher: publisherName
+    });
+
+    const project = memorySites.find(s => s.id === projectId) || { name: projectId, state: '' };
+    const logEntry = {
+      id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+      timestamp: new Date(),
+      projectId,
+      projectName: project.name,
+      state: project.state,
+      actionType: 'stream_started',
+      actorId: socket.id,
+      actorName: `${publisherName || 'NGO Staff'} (Field Streamer)`,
+      field: 'Live Video Monitoring',
+      oldValue: 'Offline',
+      newValue: 'Live',
+      description: `Live video stream started for ${project.name}`,
+      locationCaptured: Boolean(location?.latitude && location?.longitude),
+      location: location || null,
+      isInspectionOnSite: false
+    };
+    memoryLogs.unshift(logEntry);
+    if (isDBConnected()) {
+      try { await AuditLog.create(logEntry); } catch(e){}
+    }
+    io.emit('audit:new_entry', {
+      ...logEntry,
+      formattedIST: formatToIST(logEntry.timestamp),
+      relativeIST: formatRelativeIST(logEntry.timestamp)
+    });
+  });
+
+  socket.on('stream:stop', async ({ projectId, publisherName }) => {
+    streamStatusMap.set(projectId, 'Offline');
+    io.to(`stream:${projectId}`).emit('stream:status', {
+      projectId,
+      status: 'Offline'
+    });
+
+    const project = memorySites.find(s => s.id === projectId) || { name: projectId, state: '' };
+    const logEntry = {
+      id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
+      timestamp: new Date(),
+      projectId,
+      projectName: project.name,
+      state: project.state,
+      actionType: 'stream_stopped',
+      actorId: socket.id,
+      actorName: `${publisherName || 'NGO Staff'} (Field Streamer)`,
+      field: 'Live Video Monitoring',
+      oldValue: 'Live',
+      newValue: 'Offline',
+      description: `Live video stream ended for ${project.name}`,
+      locationCaptured: false,
+      isInspectionOnSite: false
+    };
+    memoryLogs.unshift(logEntry);
+    if (isDBConnected()) {
+      try { await AuditLog.create(logEntry); } catch(e){}
+    }
+    io.emit('audit:new_entry', {
+      ...logEntry,
+      formattedIST: formatToIST(logEntry.timestamp),
+      relativeIST: formatRelativeIST(logEntry.timestamp)
+    });
+  });
+
+  socket.on('stream:signal', ({ projectId, target, signal, from }) => {
+    if (target) {
+      io.to(target).emit('stream:signal', { signal, from: from || socket.id, projectId });
+    } else {
+      socket.to(`stream:${projectId}`).emit('stream:signal', { signal, from: socket.id, projectId });
+    }
+  });
 });
 
 // Initialize DB and Start Server

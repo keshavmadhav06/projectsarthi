@@ -23,18 +23,6 @@ const AuditLogSchema = new mongoose.Schema({
   actionType: {
     type: String,
     required: true,
-    enum: [
-      'checklist',
-      'checklist_toggle',
-      'custom_item_added',
-      'custom_item_deleted',
-      'score',
-      'score_changed',
-      'status',
-      'status_changed',
-      'comment',
-      'inspection'
-    ],
     index: true
   },
   actorId: {
@@ -64,6 +52,22 @@ const AuditLogSchema = new mongoose.Schema({
   description: {
     type: String,
     required: true
+  },
+  locationCaptured: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  location: {
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    accuracy: { type: Number, default: null },
+    capturedAt: { type: Date, default: null }
+  },
+  isInspectionOnSite: {
+    type: Boolean,
+    default: false,
+    index: true
   },
   timestamp: {
     type: Date,

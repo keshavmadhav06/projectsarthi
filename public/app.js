@@ -54,9 +54,60 @@ try {
         }
       }
     });
+    liveSocket.on('project:attendance_updated', (data) => {
+      if (!state.data || !state.data.sites) return;
+      const project = state.data.sites.find(s => s.id === data.projectId);
+      if (project) {
+        project.attendance = data.attendance;
+        if (typeof data.score === 'number') project.score = data.score;
+        const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
+        if (cardEl) {
+          const attEl = cardEl.querySelector('.card-attendance-val');
+          if (attEl) attEl.textContent = `Attendance: ${data.attendance}%`;
+        }
+        if (state.view === 'attendance' && typeof loadAttendanceHistory === 'function') {
+          loadAttendanceHistory(data.projectId);
+        }
+      }
+    });
+    liveSocket.on('notification:new', (notif) => {
+      if (typeof refreshNotificationBadge === 'function') refreshNotificationBadge();
+      showToast(`⚠️ Anomaly: ${notif.message}`);
+    });
+    liveSocket.on('notification:resolved', () => {
+      if (typeof refreshNotificationBadge === 'function') refreshNotificationBadge();
+    });
+    liveSocket.on('stream:status', (data) => {
+      const pill = document.querySelector(`#stream-pill-${data.projectId}`);
+      if (pill) {
+        pill.className = `stream-pill ${data.isStreaming ? 'live' : 'offline'}`;
+        pill.textContent = data.isStreaming ? '● LIVE' : '○ OFFLINE';
+      }
+    });
   }
 } catch (e) {
   console.warn('[Socket.io Notice]', e.message);
+}
+
+async function captureActionGeolocation() {
+  if (!navigator.geolocation) return null;
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          latitude: Number(pos.coords.latitude.toFixed(6)),
+          longitude: Number(pos.coords.longitude.toFixed(6)),
+          accuracy: Math.round(pos.coords.accuracy || 10),
+          capturedAt: new Date(pos.timestamp || Date.now()).toISOString()
+        });
+      },
+      (err) => {
+        console.warn('[Geo] Location capture skipped:', err.message);
+        resolve(null);
+      },
+      { enableHighAccuracy: true, timeout: 4000, maximumAge: 10000 }
+    );
+  });
 }
 
 async function load(){
@@ -74,6 +125,8 @@ async function load(){
   dashboardFingerprint=JSON.stringify({sites:state.data.sites,inspections:state.data.inspections,stats:state.data.stats,logs:state.data.logs});
   if(new URLSearchParams(location.search).get('cameraRoom'))state.view='cctv';
   render();
+  refreshNotificationBadge();
+  initChatbotWidget();
 }
 
 function startDashboardSync(){
@@ -400,47 +453,8 @@ async function handleAddCustomItem(project, catIdx, text, rawWeight){
     });
   });
   const newScore = Math.round((checkedWeights / (totalWeights || 100)) * 100);
-  const delta = newScore - oldScore;
   project.score = newScore;
   project.lastUpdated = new Date().toISOString();
-
-  const user = getCurrentUser();
-  const actorName = `${user.name} (${user.role})`;
-  const addLog = {
-    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-    timestamp: project.lastUpdated,
-    projectId: project.id,
-    projectName: project.name,
-    state: project.state,
-    actionType: 'checklist',
-    actor: actorName,
-    field: 'Custom Checklist Item Added',
-    oldValue: '',
-    newValue: text.slice(0, 45) + (text.length > 45 ? '…' : ''),
-    description: `Custom checklist item added in ${cat.category} by ${user.name}: "${text}" (weights proportionally rescaled to 25%)`
-  };
-  state.data.logs = state.data.logs || [];
-  state.data.logs.unshift(addLog);
-
-  if(delta !== 0){
-    const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
-    const scoreLog = {
-      id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-      timestamp: project.lastUpdated,
-      projectId: project.id,
-      projectName: project.name,
-      state: project.state,
-      actionType: 'score',
-      actor: actorName,
-      field: 'Compliance Score',
-      oldValue: `${oldScore}%`,
-      newValue: `${newScore}%`,
-      delta: deltaStr,
-      description: `Compliance score recalculated to ${newScore}% (${deltaStr}) following custom item addition`
-    };
-    state.data.logs.unshift(scoreLog);
-  }
-  if(state.view === 'logs') applyLogFilters();
 
   renderDrawerContent(project);
 
@@ -454,10 +468,11 @@ async function handleAddCustomItem(project, catIdx, text, rawWeight){
 
   showToast('Custom item added and category weights rescaled.');
 
+  const location = await captureActionGeolocation();
   try {
     const res = await api(`/api/projects/${encodeURIComponent(project.id)}/custom-item`, {
       method: 'POST',
-      body: JSON.stringify({ category: cat.category, text, rawWeight })
+      body: JSON.stringify({ category: cat.category, text, rawWeight, location })
     });
     if (res.ok) {
       const resp = await res.json();
@@ -493,47 +508,8 @@ async function handleDeleteCustomItem(project, catIdx, itemId){
     });
   });
   const newScore = Math.round((checkedWeights / (totalWeights || 100)) * 100);
-  const delta = newScore - oldScore;
   project.score = newScore;
   project.lastUpdated = new Date().toISOString();
-
-  const user = getCurrentUser();
-  const actorName = `${user.name} (${user.role})`;
-  const deleteLog = {
-    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-    timestamp: project.lastUpdated,
-    projectId: project.id,
-    projectName: project.name,
-    state: project.state,
-    actionType: 'checklist',
-    actor: actorName,
-    field: 'Custom Checklist Item Deleted',
-    oldValue: itemToDelete.text.slice(0, 45) + (itemToDelete.text.length > 45 ? '…' : ''),
-    newValue: '',
-    description: `Custom checklist item deleted by ${user.name}: "${itemToDelete.text}" (weights re-normalized to 25%)`
-  };
-  state.data.logs = state.data.logs || [];
-  state.data.logs.unshift(deleteLog);
-
-  if(delta !== 0){
-    const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
-    const scoreLog = {
-      id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-      timestamp: project.lastUpdated,
-      projectId: project.id,
-      projectName: project.name,
-      state: project.state,
-      actionType: 'score',
-      actor: actorName,
-      field: 'Compliance Score',
-      oldValue: `${oldScore}%`,
-      newValue: `${newScore}%`,
-      delta: deltaStr,
-      description: `Compliance score recalculated to ${newScore}% (${deltaStr}) following custom item removal`
-    };
-    state.data.logs.unshift(scoreLog);
-  }
-  if(state.view === 'logs') applyLogFilters();
 
   renderDrawerContent(project);
 
@@ -547,9 +523,12 @@ async function handleDeleteCustomItem(project, catIdx, itemId){
 
   showToast('Custom item removed and category weights re-normalized.');
 
+  const location = await captureActionGeolocation();
   try {
     const res = await api(`/api/projects/${encodeURIComponent(project.id)}/custom-item/${encodeURIComponent(itemId)}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ location })
     });
     if (res.ok) {
       const resp = await res.json();
@@ -576,7 +555,6 @@ async function handleChecklistToggle(project, checkbox){
   });
   const oldScore = project.score;
   const newScore = Math.round((checkedWeights / (totalWeights || 100)) * 100);
-  const delta = newScore - oldScore;
   project.score = newScore;
   project.lastUpdated = new Date().toISOString();
 
@@ -595,7 +573,7 @@ async function handleChecklistToggle(project, checkbox){
     catHead.textContent = `${catTitle} (${catChecked}/${catItems.length})`;
   }
 
-  // 2. Update Main List Project Card DOM immediately (no page reload)
+  // 2. Update Main List Project Card DOM immediately
   const cardEl = document.querySelector(`.project-card[data-project-id="${project.id}"]`);
   if(cardEl){
     const cardScore = cardEl.querySelector('.card-score');
@@ -604,48 +582,12 @@ async function handleChecklistToggle(project, checkbox){
     if(cardProgress) cardProgress.style.width = `${newScore}%`;
   }
 
-  // 3. Create Audit Log entries immediately for real-time feed
-  const user = getCurrentUser();
-  const actorName = `${user.name} (${user.role})`;
-  const deltaStr = delta > 0 ? `+${delta}%` : `${delta}%`;
-  const isCustomBadge = targetItem?.custom ? ' [Custom Item]' : '';
-  const checklistLog = {
-    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-    timestamp: project.lastUpdated,
-    projectId: project.id,
-    projectName: project.name,
-    state: project.state,
-    actionType: 'checklist',
-    actor: actorName,
-    field: targetItem ? (targetItem.text.slice(0, 40) + '…' + isCustomBadge) : 'Checklist Item',
-    oldValue: isChecked ? 'Unchecked' : 'Checked',
-    newValue: isChecked ? 'Checked' : 'Unchecked',
-    description: `Checklist item ${isChecked ? 'verified' : 'unmarked'}${isCustomBadge}: "${targetItem ? targetItem.text : ''}"`
-  };
-  const scoreLog = {
-    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-    timestamp: project.lastUpdated,
-    projectId: project.id,
-    projectName: project.name,
-    state: project.state,
-    actionType: 'score',
-    actor: actorName,
-    field: 'Compliance Score',
-    oldValue: `${oldScore}%`,
-    newValue: `${newScore}%`,
-    delta: deltaStr,
-    description: `Compliance score recalculated from ${oldScore}% to ${newScore}% (${deltaStr})`
-  };
-  state.data.logs = state.data.logs || [];
-  state.data.logs.unshift(scoreLog);
-  state.data.logs.unshift(checklistLog);
-  if(state.view === 'logs') applyLogFilters();
-
-  // 4. Persist to Backend API
+  // 3. Persist to Backend API with captured Geolocation (Server logs authoritative entry & evaluates anomaly rules)
+  const location = await captureActionGeolocation();
   try {
     await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
       method: 'PUT',
-      body: JSON.stringify({ checklist: project.checklist, score: project.score, logEntry: checklistLog })
+      body: JSON.stringify({ checklist: project.checklist, score: project.score, location })
     });
   } catch(e){
     try { localStorage.setItem(`checklist_${project.id}`, JSON.stringify(project.checklist)); } catch{}
@@ -671,28 +613,12 @@ async function handleStatusToggle(project){
       cardStatus.textContent = nextStatus === 'Live' ? '● Live' : '○ Closed';
     }
   }
-  const actorName = sessionStorage.saarthiUser ? JSON.parse(sessionStorage.saarthiUser).name : 'Arjun Mehta (PMU Inspector)';
-  const statusLog = {
-    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-    timestamp: project.lastUpdated,
-    projectId: project.id,
-    projectName: project.name,
-    state: project.state,
-    actionType: 'status',
-    actor: actorName,
-    field: 'Status',
-    oldValue: currentStatus,
-    newValue: nextStatus,
-    description: `Project operational status changed from ${currentStatus} to ${nextStatus}`
-  };
-  state.data.logs = state.data.logs || [];
-  state.data.logs.unshift(statusLog);
-  if(state.view === 'logs') applyLogFilters();
   showToast(`Project status updated to ${nextStatus}.`);
+  const location = await captureActionGeolocation();
   try {
     await api(`/api/projects/${encodeURIComponent(project.id)}/checklist`, {
       method: 'PUT',
-      body: JSON.stringify({ status: nextStatus, logEntry: statusLog })
+      body: JSON.stringify({ status: nextStatus, location })
     });
   } catch{}
 }
@@ -702,27 +628,23 @@ async function handleSaveInspectorNote(project){
   const text = noteInput ? noteInput.value.trim() : '';
   if(!text) return showToast('Please enter an observation note.');
   project.lastUpdated = new Date().toISOString();
-  const actorName = sessionStorage.saarthiUser ? JSON.parse(sessionStorage.saarthiUser).name : 'Arjun Mehta (PMU Inspector)';
-  const commentLog = {
-    id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
-    timestamp: project.lastUpdated,
-    projectId: project.id,
-    projectName: project.name,
-    state: project.state,
-    actionType: 'comment',
-    actor: actorName,
-    field: 'Inspector Observation',
-    oldValue: '',
-    newValue: text.slice(0, 50) + (text.length > 50 ? '…' : ''),
-    description: `Inspector Note: "${text}"`
-  };
-  state.data.logs = state.data.logs || [];
-  state.data.logs.unshift(commentLog);
-  if(state.view === 'logs') applyLogFilters();
   noteInput.value = '';
-  showToast('Inspector observation added to audit log.');
+  showToast('Inspector observation submitted to audit ledger.');
+  const location = await captureActionGeolocation();
   try {
-    await api('/api/logs', { method: 'POST', body: JSON.stringify(commentLog) });
+    await api('/api/logs', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectId: project.id,
+        projectName: project.name,
+        state: project.state,
+        actionType: 'comment',
+        field: 'Inspector Observation',
+        newValue: text,
+        description: `Inspector Note: "${text}"`,
+        location
+      })
+    });
   } catch{}
 }
 
@@ -796,6 +718,12 @@ function renderLogRows(logsList){
     else if (l.actionType === 'comment') actionBadge = `<span class="badge live">Inspector Note</span>`;
     else if (l.actionType === 'custom_item_added') actionBadge = `<span class="badge live">Custom Item</span>`;
     else if (l.actionType === 'custom_item_deleted') actionBadge = `<span class="badge warning">Item Deleted</span>`;
+    else if (l.actionType === 'attendance_submitted') actionBadge = `<span class="badge live">Attendance</span>`;
+    else if (l.actionType === 'stream_started') actionBadge = `<span class="badge high">Stream Started</span>`;
+    else if (l.actionType === 'stream_stopped') actionBadge = `<span class="badge warning">Stream Stopped</span>`;
+    else if (l.actionType === 'alert_triggered') actionBadge = `<span class="badge high">Anomaly Alert</span>`;
+    else if (l.actionType === 'inspection_started') actionBadge = `<span class="badge live">Inspection Started</span>`;
+    else if (l.actionType === 'report_submitted') actionBadge = `<span class="badge info">Report Submitted</span>`;
     else actionBadge = `<span class="badge info">${esc(l.actionType || 'Action')}</span>`;
 
     let valueChange = '';
@@ -807,6 +735,15 @@ function renderLogRows(logsList){
     const exactIst = typeof window.formatToIST === 'function' ? window.formatToIST(l.timestamp) : new Date(l.timestamp).toLocaleString('en-IN');
     const relTime = formatRelativeOrDate(l.timestamp);
 
+    let geoMeta = '';
+    if (l.locationCaptured && l.location?.latitude) {
+      geoMeta = `<button type="button" class="log-pin-btn" data-lat="${l.location.latitude}" data-lng="${l.location.longitude}" data-acc="${l.location.accuracy || 10}" data-desc="${esc(l.description || l.field)}" title="View Geo-tag Location">📍 GPS Pin</button>`;
+    }
+    let onsiteMeta = '';
+    if (l.isInspectionOnSite) {
+      onsiteMeta = `<span class="badge-onsite">✓ On-Site</span>`;
+    }
+
     return `
       <div class="log-row" data-project-id="${esc(l.projectId)}" title="Click to view ${esc(l.projectName)} details">
         <div class="log-time">
@@ -815,8 +752,10 @@ function renderLogRows(logsList){
         </div>
         <div class="log-proj">${esc(l.projectName)}</div>
         <div class="log-desc">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:3px;flex-wrap:wrap">
             ${actionBadge}
+            ${onsiteMeta}
+            ${geoMeta}
             <span>${esc(l.description || l.field)}</span>
           </div>
           ${(l.actorName || l.actor) ? `<span class="log-actor">By ${esc(l.actorName || l.actor)}</span>` : ''}
@@ -855,39 +794,605 @@ function bindLogClicks(){
       if(projId && projId !== 'P-General') openProjectDrawer(projId);
     };
   });
+  document.querySelectorAll('#logs-container .log-pin-btn').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const lat = parseFloat(btn.dataset.lat);
+      const lng = parseFloat(btn.dataset.lng);
+      const acc = parseFloat(btn.dataset.acc) || 10;
+      const desc = btn.dataset.desc;
+      openGeoMapModal(lat, lng, acc, desc);
+    };
+  });
+}
+
+function openGeoMapModal(lat, lng, acc, desc){
+  const content = `
+    <h2>📍 Geo-Tagged Audit Location</h2>
+    <p style="margin:5px 0 14px;color:var(--muted);font-size:13px">${esc(desc)}</p>
+    <div id="log-geo-map" style="width:100%;height:320px;border-radius:10px;border:1px solid var(--border);margin-bottom:12px;overflow:hidden"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;background:#f0f7f3;padding:10px 14px;border-radius:8px;font-size:12px;color:#1e6950">
+      <span><b>Coordinates:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}</span>
+      <span><b>Accuracy:</b> ±${acc}m</span>
+      <span style="color:#093b2f;font-weight:600">✓ Immutable GPS Stamp</span>
+    </div>
+    <div style="margin-top:16px;text-align:right">
+      <button class="primary" id="close-geomap-modal">Close</button>
+    </div>
+  `;
+  openModal(content);
+  const closeBtn = $('#close-geomap-modal');
+  if (closeBtn) closeBtn.onclick = closeModal;
+  setTimeout(async () => {
+    try {
+      await ensureLeaflet();
+      const mapEl = $('#log-geo-map');
+      if (!mapEl) return;
+      const map = L.map(mapEl).setView([lat, lng], 15);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+      L.marker([lat, lng]).addTo(map).bindPopup(`<b>Audit Location</b><br>${lat.toFixed(6)}, ${lng.toFixed(6)}<br>Accuracy: ±${acc}m`).openPopup();
+      L.circle([lat, lng], { radius: acc, color: '#1a5ca8', weight: 1, fillColor: '#3d83cf', fillOpacity: 0.15 }).addTo(map);
+    } catch(err) {
+      console.warn('Map initialization failed:', err);
+    }
+  }, 100);
 }
 
 function inspections(){return `<div class="card"><div class="card-head"><div><h2>Inspections</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Create a field inspection, capture verified evidence and location, then choose fair auto-assignment or a specific inspector.</p></div></div><div class="assignment-explainer"><b>On-ground workflow:</b> start the assignment when the inspector reaches the site. The registered NGO/institute is notified. Submitting the verified report completes the inspection and shares the report with that organisation.</div>${state.data.inspections.length?inspectionTable(state.data.inspections,true):'<div class="empty">No inspection has been created yet.</div>'}</div>`}
-function cctv(){return `<div class="card"><div class="card-head"><div><h2>Authorized live CCTV feeds</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Connect up to four authorised field phones. The video is relayed securely to this monitoring screen.</p></div><span class="badge live">● AI SCREENING ACTIVE</span></div><div class="ai-monitor-note"><b>AI-assisted monitoring:</b> monitors connected feeds for feed loss and unusual movement. <span>Every AI alert requires an officer’s review before any action.</span></div><div class="cctv-grid mobile-cctv-grid">${[1,2,3,4].map(slot=>`<div class="feed mobile-cctv" id="mobile-cctv-card-${slot}"><video id="mobile-cctv-video-${slot}" autoplay playsinline></video><span class="status">● MOBILE CCTV ${slot}</span><span class="cam-time" data-clock></span><button class="connect-mobile-camera" data-mobile-slot="${slot}">Connect phone camera</button><button class="cctv-fullscreen" data-fullscreen-slot="${slot}" disabled>Full screen</button><div class="cctv-ai-status" id="cctv-ai-status-${slot}">AI: Awaiting camera connection</div><h3>Field camera ${slot}</h3><small id="mobile-cctv-caption-${slot}">Ready for authorised device</small></div>`).join('')}</div></div>`}
+function cctv(){
+  const d = state.data || {};
+  const sitesList = d.sites || [];
+  return `
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-head">
+        <div>
+          <h2>Authorized Live Stream & CCTV Monitoring</h2>
+          <p style="margin:5px 0 0;color:var(--muted);font-size:12px">WebRTC broadcast over real-time gateway. NGO & field cameras stream live inspections to command centre monitors.</p>
+        </div>
+        <span class="badge live">● WEBRTC ENCRYPTED</span>
+      </div>
+      <div class="ai-monitor-note">
+        <b>Live Video Protocol:</b> Direct peer streaming with STUN NAT traversal. Initiating or terminating a video broadcast creates an immutable audit trail entry.
+      </div>
+    </div>
+
+    <div class="project-grid" style="grid-template-columns:repeat(auto-fit, minmax(340px, 1fr));gap:20px;margin-bottom:24px">
+      ${sitesList.map(p => {
+        const isStreaming = Boolean(window._activeBroadcasts && window._activeBroadcasts[p.id]);
+        return `
+          <div class="card stream-card" data-stream-proj="${esc(p.id)}" style="display:flex;flex-direction:column;gap:12px;padding:16px">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <h3 style="margin:0;font-size:15px;color:var(--deep)">${esc(p.name)}</h3>
+                <small style="color:var(--muted)">${esc(p.scheme)} · ${esc(p.district)}, ${esc(p.state)}</small>
+              </div>
+              <span class="stream-pill ${isStreaming ? 'live' : 'offline'}" id="stream-pill-${esc(p.id)}">${isStreaming ? '● LIVE' : '○ OFFLINE'}</span>
+            </div>
+
+            <div class="stream-video-container" id="stream-box-${esc(p.id)}" style="position:relative;background:#0c2642;border-radius:8px;height:210px;overflow:hidden;display:flex;align-items:center;justify-content:center">
+              <video id="stream-video-${esc(p.id)}" autoplay playsinline controls style="width:100%;height:100%;object-fit:cover;display:none"></video>
+              <div class="stream-standby" id="stream-standby-${esc(p.id)}" style="text-align:center;color:#7cb9a2">
+                <div style="font-size:24px;margin-bottom:6px">📹</div>
+                <div style="font-weight:700;font-size:13px;letter-spacing:0.5px">STANDBY · NO ACTIVE FEED</div>
+                <small style="color:#577e70;font-size:11px">Ready for field officer or NGO camera broadcast</small>
+              </div>
+              <div class="stream-hud" id="stream-hud-${esc(p.id)}" style="display:none;position:absolute;top:8px;left:8px;right:8px;justify-content:space-between;align-items:center;pointer-events:none;z-index:2">
+                <span class="hud-pill" style="background:#167d59;color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">● LIVE FEED</span>
+                <span class="hud-clock" data-clock style="color:#d5f36a;font-family:monospace;font-size:11px;background:#061c31aa;padding:2px 6px;border-radius:4px"></span>
+              </div>
+            </div>
+
+            <div class="stream-actions" style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="primary start-broadcast-btn" data-proj-id="${esc(p.id)}" style="font-size:11px;padding:6px 12px">📹 Start Broadcast</button>
+              <button class="secondary watch-stream-btn" data-proj-id="${esc(p.id)}" style="font-size:11px;padding:6px 12px">👁 Watch Feed</button>
+              <button class="secondary stop-broadcast-btn hidden" data-proj-id="${esc(p.id)}" style="font-size:11px;padding:6px 12px;background:#e53935;color:#fff;border-color:#e53935">⏹ Stop Stream</button>
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function attendance(){
+  const d = state.data || {};
+  const sitesList = d.sites || [];
+  const todayStr = new Date().toISOString().split('T')[0];
+  return `
+    <div class="logs-header-box">
+      <div>
+        <h2 style="font-size:20px;margin-bottom:4px">NGO Staff Attendance Portal</h2>
+        <p style="font-size:12px;color:var(--muted);margin:0">Log verified staff attendance, capture GPS coordinates, and maintain automated compliance metrics.</p>
+      </div>
+    </div>
+    <div class="attendance-container" style="display:grid;grid-template-columns:minmax(320px, 420px) 1fr;gap:20px;align-items:start">
+      <div class="card" style="padding:20px">
+        <h3 style="margin-top:0;font-size:16px;color:var(--deep)">Submit Daily Attendance</h3>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Future dates are blocked. Marking attendance updates the project's attendance score in real time.</p>
+        <form id="attendance-submit-form" style="display:flex;flex-direction:column;gap:12px">
+          <label style="font-size:12px;font-weight:600">
+            Project / Scheme
+            <select name="projectId" id="att-proj-select" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc">
+              ${sitesList.map(s => `<option value="${esc(s.id)}">${esc(s.name)} (${esc(s.district)}, ${esc(s.state)})</option>`).join('')}
+            </select>
+          </label>
+          <label style="font-size:12px;font-weight:600">
+            Date (Max: Today)
+            <input type="date" name="date" id="att-date-input" value="${todayStr}" max="${todayStr}" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+          </label>
+          <label style="font-size:12px;font-weight:600">
+            Staff Member Name
+            <input type="text" name="staffName" placeholder="e.g. Ramesh Kumar" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+          </label>
+          <label style="font-size:12px;font-weight:600">
+            Staff ID / Biometric Code
+            <input type="text" name="staffId" placeholder="e.g. STF-2026-081" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+          </label>
+          <div style="display:flex;gap:12px">
+            <label style="flex:1;font-size:12px;font-weight:600">
+              Check-in Time
+              <input type="time" name="checkIn" value="09:00" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+            </label>
+            <label style="flex:1;font-size:12px;font-weight:600">
+              Check-out Time
+              <input type="time" name="checkOut" value="17:00" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+            </label>
+          </div>
+          <label style="font-size:12px;font-weight:600">
+            Status
+            <select name="status" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc">
+              <option value="Present">Present</option>
+              <option value="Absent">Absent</option>
+              <option value="On Leave">On Leave</option>
+            </select>
+          </label>
+          <div class="partner-coordinates" style="margin-top:4px">
+            <span id="att-geo-status">GPS Stamp Optional</span>
+            <button type="button" class="secondary" id="att-capture-geo" style="font-size:11px;padding:4px 8px">Capture GPS</button>
+          </div>
+          <input type="hidden" id="att-lat" name="lat" />
+          <input type="hidden" id="att-lng" name="lng" />
+          <input type="hidden" id="att-acc" name="acc" />
+          <button type="submit" class="primary" style="margin-top:8px">Submit Attendance Record</button>
+        </form>
+      </div>
+
+      <div class="card" style="padding:20px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+          <h3 style="margin:0;font-size:16px;color:var(--deep)">Attendance History & Records</h3>
+          <button class="secondary" id="refresh-att-btn" style="font-size:11px;padding:4px 10px">↻ Refresh</button>
+        </div>
+        <div id="attendance-history-table">
+          <div style="padding:20px;text-align:center;color:var(--muted)">Loading attendance records…</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadAttendanceHistory(projectId) {
+  const container = $('#attendance-history-table');
+  if (!container) return;
+  try {
+    const pId = projectId || $('#att-proj-select')?.value || state.data?.sites?.[0]?.id;
+    if (!pId) return;
+    const res = await api(`/api/attendance/${encodeURIComponent(pId)}`);
+    if (!res.ok) throw new Error('Failed to load');
+    const data = await res.json();
+    const records = data.records || [];
+    if (!records.length) {
+      container.innerHTML = `<div class="empty">No attendance records submitted for this project yet. Use the form on the left to submit records.</div>`;
+      return;
+    }
+    container.innerHTML = `
+      <table class="table">
+        <thead>
+          <tr>
+            <th>DATE</th>
+            <th>STAFF NAME / ID</th>
+            <th>TIME</th>
+            <th>STATUS</th>
+            <th>LOCATION</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${records.map(r => `
+            <tr>
+              <td><strong>${esc(r.date)}</strong></td>
+              <td>${esc(r.staffName)}<br><small style="color:var(--muted)">${esc(r.staffId)}</small></td>
+              <td>${esc(r.checkIn || '-')}${r.checkOut ? ` - ${esc(r.checkOut)}` : ''}</td>
+              <td><span class="badge ${r.status === 'Present' ? 'live' : 'high'}">${esc(r.status)}</span></td>
+              <td>${r.locationCaptured && r.location?.latitude ? `<span title="${r.location.latitude.toFixed(4)}, ${r.location.longitude.toFixed(4)}">📍 GPS (±${r.location.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch(e) {
+    container.innerHTML = `<div class="empty">Could not load attendance records.</div>`;
+  }
+}
+
+function bindAttendance(){
+  const form = $('#attendance-submit-form');
+  const projSelect = $('#att-proj-select');
+  const refreshBtn = $('#refresh-att-btn');
+  const captureBtn = $('#att-capture-geo');
+
+  if (projSelect) {
+    projSelect.onchange = () => loadAttendanceHistory(projSelect.value);
+    loadAttendanceHistory(projSelect.value);
+  }
+  if (refreshBtn) {
+    refreshBtn.onclick = () => loadAttendanceHistory(projSelect ? projSelect.value : null);
+  }
+  if (captureBtn) {
+    captureBtn.onclick = async () => {
+      captureBtn.textContent = 'Locating…';
+      const loc = await captureActionGeolocation();
+      if (loc) {
+        $('#att-lat').value = loc.latitude;
+        $('#att-lng').value = loc.longitude;
+        $('#att-acc').value = loc.accuracy;
+        $('#att-geo-status').textContent = `GPS: ${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)} (±${loc.accuracy}m)`;
+        captureBtn.textContent = '✓ GPS Captured';
+      } else {
+        $('#att-geo-status').textContent = 'GPS Unavailable';
+        captureBtn.textContent = 'Retry GPS';
+      }
+    };
+  }
+  if (form) {
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const submitBtn = form.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting…';
+      const fd = new FormData(form);
+      const data = Object.fromEntries(fd);
+      const payload = {
+        projectId: data.projectId,
+        date: data.date,
+        staffName: data.staffName,
+        staffId: data.staffId,
+        checkIn: data.checkIn,
+        checkOut: data.checkOut,
+        status: data.status,
+        location: data.lat ? {
+          latitude: parseFloat(data.lat),
+          longitude: parseFloat(data.lng),
+          accuracy: parseFloat(data.acc) || 10
+        } : null
+      };
+      try {
+        const res = await api('/api/attendance', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        const resp = await res.json();
+        if (!res.ok) throw new Error(resp.error || 'Failed to submit attendance');
+        showToast(`Attendance recorded! Project attendance score: ${resp.attendance}%`);
+        form.querySelector('input[name="staffName"]').value = '';
+        form.querySelector('input[name="staffId"]').value = '';
+        await loadAttendanceHistory(data.projectId);
+      } catch(err) {
+        showToast(err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit Attendance Record';
+      }
+    };
+  }
+}
+
+window._activeBroadcasts = window._activeBroadcasts || {};
+
+async function startProjectBroadcast(projectId) {
+  const videoEl = $(`#stream-video-${projectId}`);
+  const standbyEl = $(`#stream-standby-${projectId}`);
+  const hudEl = $(`#stream-hud-${projectId}`);
+  const pillEl = $(`#stream-pill-${projectId}`);
+  const startBtn = document.querySelector(`.start-broadcast-btn[data-proj-id="${projectId}"]`);
+  const stopBtn = document.querySelector(`.stop-broadcast-btn[data-proj-id="${projectId}"]`);
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+    window._activeBroadcasts[projectId] = stream;
+
+    if (videoEl) {
+      videoEl.srcObject = stream;
+      videoEl.style.display = 'block';
+    }
+    if (standbyEl) standbyEl.style.display = 'none';
+    if (hudEl) hudEl.style.display = 'flex';
+    if (pillEl) {
+      pillEl.className = 'stream-pill live';
+      pillEl.textContent = '● LIVE';
+    }
+    if (startBtn) startBtn.classList.add('hidden');
+    if (stopBtn) stopBtn.classList.remove('hidden');
+
+    await api(`/api/stream/${encodeURIComponent(projectId)}/start`, { method: 'POST' });
+    if (liveSocket) {
+      liveSocket.emit('stream:start', { projectId });
+    }
+    showToast('Secure camera broadcast started.');
+  } catch(err) {
+    showToast('Camera access denied or unavailable: ' + err.message);
+  }
+}
+
+async function stopProjectBroadcast(projectId) {
+  const stream = window._activeBroadcasts[projectId];
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    delete window._activeBroadcasts[projectId];
+  }
+  const videoEl = $(`#stream-video-${projectId}`);
+  const standbyEl = $(`#stream-standby-${projectId}`);
+  const hudEl = $(`#stream-hud-${projectId}`);
+  const pillEl = $(`#stream-pill-${projectId}`);
+  const startBtn = document.querySelector(`.start-broadcast-btn[data-proj-id="${projectId}"]`);
+  const stopBtn = document.querySelector(`.stop-broadcast-btn[data-proj-id="${projectId}"]`);
+
+  if (videoEl) {
+    videoEl.srcObject = null;
+    videoEl.style.display = 'none';
+  }
+  if (standbyEl) standbyEl.style.display = 'flex';
+  if (hudEl) hudEl.style.display = 'none';
+  if (pillEl) {
+    pillEl.className = 'stream-pill offline';
+    pillEl.textContent = '○ OFFLINE';
+  }
+  if (startBtn) startBtn.classList.remove('hidden');
+  if (stopBtn) stopBtn.classList.add('hidden');
+
+  try {
+    await api(`/api/stream/${encodeURIComponent(projectId)}/stop`, { method: 'POST' });
+    if (liveSocket) {
+      liveSocket.emit('stream:stop', { projectId });
+    }
+    showToast('Broadcast stopped and logged.');
+  } catch(e) {}
+}
+
+async function watchProjectStream(projectId) {
+  const videoEl = $(`#stream-video-${projectId}`);
+  const standbyEl = $(`#stream-standby-${projectId}`);
+  const hudEl = $(`#stream-hud-${projectId}`);
+  const pillEl = $(`#stream-pill-${projectId}`);
+
+  if (window._activeBroadcasts[projectId]) {
+    showToast('You are currently broadcasting this feed.');
+    return;
+  }
+  showToast('Connecting to live camera feed…');
+  if (liveSocket) {
+    liveSocket.emit('stream:join', { projectId });
+  }
+  try {
+    const res = await api(`/api/stream/${encodeURIComponent(projectId)}/status`);
+    const data = await res.json();
+    if (!data.isStreaming) {
+      showToast('Project camera is currently offline. Waiting for field broadcast.');
+      return;
+    }
+    if (pillEl) {
+      pillEl.className = 'stream-pill live';
+      pillEl.textContent = '● LIVE';
+    }
+    if (standbyEl) standbyEl.innerHTML = `<div style="font-size:24px;margin-bottom:6px">📡</div><div style="font-weight:700">CONNECTING WEBRTC PEER…</div>`;
+  } catch(e) {}
+}
+
+function playTTS(text, btn) {
+  if (!('speechSynthesis' in window)) {
+    showToast('Text-to-speech not supported in this browser.');
+    return;
+  }
+  if (window.speechSynthesis.speaking) {
+    window.speechSynthesis.cancel();
+    btn.textContent = '🔊 Listen';
+    btn.classList.remove('speaking');
+    return;
+  }
+  const cleanText = text.replace(/[*_#`~>\[\]]/g, '').trim();
+  const utterance = new SpeechSynthesisUtterance(cleanText);
+  utterance.lang = 'en-IN';
+  utterance.rate = 1.0;
+  btn.textContent = '⏹ Stop';
+  btn.classList.add('speaking');
+  utterance.onend = () => {
+    btn.textContent = '🔊 Listen';
+    btn.classList.remove('speaking');
+  };
+  utterance.onerror = () => {
+    btn.textContent = '🔊 Listen';
+    btn.classList.remove('speaking');
+  };
+  window.speechSynthesis.speak(utterance);
+}
+
+function initChatbotWidget() {
+  const root = $('#chatbot-root');
+  if (!root || $('#saarthi-chatbot')) return;
+  const sessionId = 'session_' + Math.random().toString(36).substring(2, 9);
+  root.innerHTML = `
+    <div id="saarthi-chatbot" class="chatbot-widget closed">
+      <button id="chatbot-toggle-btn" class="chatbot-floating-btn" title="Open Saarthi AI Assistant">
+        <span class="chat-icon">🤖</span>
+        <span class="chat-label">Saarthi AI</span>
+      </button>
+      <div class="chatbot-window" id="chatbot-window">
+        <div class="chatbot-head">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="bot-avatar">🤖</span>
+            <div>
+              <strong>Saarthi AI Assistant</strong>
+              <small>Govtech Oversight & Gemini AI</small>
+            </div>
+          </div>
+          <button id="chatbot-close-btn" class="chatbot-close" title="Minimize">−</button>
+        </div>
+        <div class="chatbot-chips">
+          <button class="chip-btn" data-query="Which projects have high risk or low compliance?">High Risk Projects</button>
+          <button class="chip-btn" data-query="Are there any active anomaly alerts?">Anomaly Alerts</button>
+          <button class="chip-btn" data-query="Summarize recent audit log events">Recent Audit Logs</button>
+        </div>
+        <div class="chatbot-messages" id="chatbot-messages">
+          <div class="chat-msg bot">
+            <div class="bubble">
+              <p>Namaste! I am the <b>Saarthi AI Assistant</b>. I can analyze real-time compliance metrics, anomaly alerts, attendance records, and audit logs. How may I assist you today?</p>
+              <button class="tts-btn" data-text="Namaste! I am the Saarthi AI Assistant. I can analyze real-time compliance metrics, anomaly alerts, attendance records, and audit logs. How may I assist you today?">🔊 Listen</button>
+            </div>
+          </div>
+        </div>
+        <form class="chatbot-input-bar" id="chatbot-form">
+          <input type="text" id="chatbot-input" placeholder="Ask about compliance, projects, or alerts…" autocomplete="off" required />
+          <button type="submit" id="chatbot-send-btn">Send</button>
+        </form>
+      </div>
+    </div>
+  `;
+
+  const widget = $('#saarthi-chatbot');
+  const toggleBtn = $('#chatbot-toggle-btn');
+  const closeBtn = $('#chatbot-close-btn');
+  const form = $('#chatbot-form');
+  const input = $('#chatbot-input');
+  const msgs = $('#chatbot-messages');
+
+  const toggle = () => widget.classList.toggle('closed');
+  if (toggleBtn) toggleBtn.onclick = toggle;
+  if (closeBtn) closeBtn.onclick = toggle;
+
+  root.querySelectorAll('.chip-btn').forEach(btn => {
+    btn.onclick = () => {
+      input.value = btn.dataset.query;
+      form.requestSubmit();
+    };
+  });
+
+  msgs.addEventListener('click', (e) => {
+    if (e.target.classList.contains('tts-btn')) {
+      const text = e.target.dataset.text || e.target.closest('.bubble')?.textContent || '';
+      playTTS(text, e.target);
+    }
+  });
+
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const query = input.value.trim();
+    if (!query) return;
+    input.value = '';
+
+    const userDiv = document.createElement('div');
+    userDiv.className = 'chat-msg user';
+    userDiv.innerHTML = `<div class="bubble"><p>${esc(query)}</p></div>`;
+    msgs.appendChild(userDiv);
+
+    const typingDiv = document.createElement('div');
+    typingDiv.className = 'chat-msg bot typing';
+    typingDiv.innerHTML = `<div class="bubble"><p><em>Analyzing live monitoring database…</em></p></div>`;
+    msgs.appendChild(typingDiv);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    try {
+      const res = await api('/api/chatbot/message', {
+        method: 'POST',
+        body: JSON.stringify({ message: query, sessionId })
+      });
+      const data = await res.json();
+      typingDiv.remove();
+      const reply = data.reply || 'No response received.';
+      const botDiv = document.createElement('div');
+      botDiv.className = 'chat-msg bot';
+      const formattedReply = esc(reply).replace(/\n/g, '<br/>').replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
+      botDiv.innerHTML = `
+        <div class="bubble">
+          <p>${formattedReply}</p>
+          <button class="tts-btn" data-text="${esc(reply)}">🔊 Listen</button>
+        </div>
+      `;
+      msgs.appendChild(botDiv);
+      msgs.scrollTop = msgs.scrollHeight;
+    } catch(err) {
+      typingDiv.remove();
+      const errDiv = document.createElement('div');
+      errDiv.className = 'chat-msg bot error';
+      errDiv.innerHTML = `<div class="bubble"><p>Connection error. Unable to reach AI service.</p></div>`;
+      msgs.appendChild(errDiv);
+    }
+  };
+}
+
 function reports(){const r=state.data.reports,grievances=state.data.feedback||[];return `<div class="card"><div class="card-head"><div><h2>Inspection reports</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Server timestamps and rules are used to flag evidence for human review.</p></div><button class="primary" id="report-top">+ New report</button></div>${r.length?`<table class="table"><thead><tr><th>REPORT</th><th>PROJECT</th><th>FINDING</th><th>STATUS</th></tr></thead><tbody>${r.map(x=>`<tr><td><strong>${x.id}</strong><br><small style="color:var(--muted)">${new Date(x.submittedAt).toLocaleString()}</small></td><td>${esc(x.site)}</td><td>${esc(x.finding)}${x.anomalies?.length?`<small class="integrity-flag">⚠ ${esc(x.anomalies[0])}</small>`:''}</td><td>${badge(x.status)}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">No submitted reports yet. Start a mobile inspection to create a geo-tagged report.</div>'}</div><div class="card section"><div class="card-head"><div><h2>Beneficiary grievances & media evidence</h2><p style="margin:5px 0 0;color:var(--muted);font-size:12px">Visible to authorised officials and the linked project / NGO account.</p></div></div>${grievances.length?`<div class="evidence-grid">${grievances.map(item=>`<article class="evidence-card"><div><span>${badge(item.category)}</span><small>${esc(item.id)} · ${new Date(item.submittedAt).toLocaleString('en-IN')}</small></div><h3>${esc(item.ngo)}</h3><p>${esc(item.message)}</p>${evidencePreview(item.evidence)}${item.evidence?`<small class="integrity-note">✓ ${esc(item.evidence.integrity)}<br>Server time: ${new Date(item.evidence.serverReceivedAt).toLocaleString('en-IN')}<br>Hash: ${esc(item.evidence.serverHash.slice(0,16))}…</small>`:''}</article>`).join('')}</div>`:'<div class="empty">No beneficiary grievances with evidence have been received.</div>'}</div><div class="integrity-card"><h3>Evidence integrity controls</h3><div><b>Server evidence hash</b><span>SHA-256 is calculated from uploaded media on the server; any changed bytes produce a different hash.</span></div><div><b>Location and time</b><span>Server network time is authoritative. Production Android uses native mock-location attestation plus cellular/network corroboration; this web demo cannot truthfully detect mock-location apps.</span></div><div><b>Offline protection</b><span>Production mobile builds store queued media in encrypted SQLite/IndexedDB and retain its capture hash; altered files fail verification when synced.</span></div><div><b>Active anomaly rules</b><span>Flags: project geo-fence deviation over 100 m; two inspections 15 km apart within 10 minutes; evidence outside 08:00–20:00 IST.</span></div></div>`}
+
 function render(){
   if(window.nationwideMap){window.nationwideMap.remove();window.nationwideMap=null}
   const user = getCurrentUser();
   const firstName = user?.name ? user.name.split(' ')[0] : 'Arjun';
   const greeting = typeof window.getISTGreeting === 'function' ? window.getISTGreeting(firstName) : `Good morning, ${firstName}`;
-  const titles={overview:greeting,projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',reports:'Inspection reports',logs:'Real-Time Audit Trail'};
+  const titles={overview:greeting,projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',attendance:'Staff Attendance Portal',reports:'Inspection reports',logs:'Real-Time Audit Trail'};
   $('#page-title').textContent=titles[state.view]||'Saarthi Monitoring';
-  $('#content').innerHTML=({overview,projects,inspections,cctv,reports,logs})[state.view]();
+  $('#content').innerHTML=({overview,projects,inspections,cctv,attendance,reports,logs})[state.view]();
   document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===state.view));
   bind();
   if(state.view==='overview')initIndiaMap();
+  if(state.view==='attendance')bindAttendance();
 }
+
 function reportModal(){return `<h2>Submit inspection report</h2><p>Capture verified field evidence and use device GPS to stamp the actual inspection location.</p><form id="report-form"><div class="form-grid"><label class="field full">Project<select name="site" required>${state.data.sites.map(s=>`<option>${esc(s.name)}</option>`).join('')}</select></label><label class="field">Inspection outcome<select name="finding"><option>Compliant</option><option>Needs corrective action</option><option>Critical non-compliance</option></select></label><label class="field">Evidence type<select name="evidence"><option>Photo + geo-tag</option><option>Video evidence</option><option>VC verification</option></select></label><label class="field full">Inspection notes<textarea name="notes" placeholder="Enter verified observations and required corrective action…" required></textarea></label><div class="field full geo-field"><div class="geo-heading"><span>Geo-tagged inspection location</span><button class="text-btn" type="button" id="expand-geo-map">Expand map ↗</button></div><div id="inspection-geo-map" class="inspection-map"><div class="geo-loading">Loading secure map…</div></div><div class="geo-actions"><button class="secondary geo-button" type="button" id="get-current-location">⌖ Capture precise GPS</button><button class="secondary" type="button" id="center-geo-pin" disabled>◎ Center location</button></div><div class="geo-details" id="geo-details"><span class="geo-dot"></span><span>GPS location not captured yet</span></div><input name="location" id="inspection-location" value="GPS location not captured yet" readonly></div></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="primary">Submit verified report</button></div></form>`}
+
 function inspectionModal(){const available=state.data.sites.filter(site=>!site.inspectionAssigned),inspectors=state.data.inspectors||[];return `<h2>New inspection</h2><p>Capture the field details and geo-tagged evidence, then choose how the responsible inspector should be assigned.</p><form id="inspection-assign-form"><div class="form-grid"><label class="field full">Project<select name="siteId" required>${available.map(site=>`<option value="${esc(site.id)}">${esc(site.name)} · ${esc(site.district)}, ${esc(site.state)}</option>`).join('')}</select></label><label class="field">Due by<select name="due"><option>Within 24 hours</option><option>Within 48 hours</option><option>Within 7 days</option><option>Scheduled follow-up</option></select></label><label class="field">Priority<select name="priority"><option>High</option><option>Medium</option><option>Low</option></select></label><label class="field">Inspection outcome<select name="finding"><option>Compliant</option><option>Needs corrective action</option><option>Critical non-compliance</option></select></label><label class="field">Evidence type<select name="evidence"><option>Photo + geo-tag</option><option>Video evidence</option><option>VC verification</option></select></label><label class="field full">Inspection notes<textarea name="notes" placeholder="Enter verified observations and required corrective action…" required></textarea></label><div class="field full geo-field"><div class="geo-heading"><span>Geo-tagged inspection location</span><button class="text-btn" type="button" id="expand-geo-map">Expand map ↗</button></div><div id="inspection-geo-map" class="inspection-map"><div class="geo-loading">Loading secure map…</div></div><div class="geo-actions"><button class="secondary geo-button" type="button" id="get-current-location">⌖ Capture precise GPS</button><button class="secondary" type="button" id="center-geo-pin" disabled>◎ Center location</button></div><div class="geo-details" id="geo-details"><span class="geo-dot"></span><span>GPS location not captured yet</span></div><input name="location" id="inspection-location" value="GPS location not captured yet" readonly></div><label class="field full">Specific inspector <small>(only used for Specific assign)</small><select name="inspectorName"><option value="">Select inspector</option>${inspectors.map(inspector=>`<option value="${esc(inspector.name)}">${esc(inspector.name)} · ${esc(inspector.role)} · workload ${inspector.workload}</option>`).join('')}</select></label></div><div class="assignment-choice"><b>Choose assignment method</b><span>Auto-assignment is fair by design; specific assignment is recorded in the audit trail.</span></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="secondary assignment-button" type="submit" value="specific">Assign to selected inspector</button><button class="primary" type="submit" value="auto">✦ Auto-assign fairly</button></div></form>`}
-function notificationsModal(){return `<h2>Notifications</h2><p>Latest system alerts and inspection activity.</p><div class="notification-list">${state.data.alerts.map(a=>`<div class="alert"><span class="alert-icon ${a.severity}">!</span><div><strong>${esc(a.type)}</strong><p>${esc(a.site)} · ${esc(a.text)}</p></div><time>${esc(a.time)}</time></div>`).join('')||'<div class="empty">You have no new notifications.</div>'}</div>`}
-function toggleProfileMenu(){let menu=$('#profile-menu');if(menu){menu.remove();return}menu=document.createElement('div');menu.id='profile-menu';menu.innerHTML=`<div class="profile-menu-head"><span class="avatar">AM</span><div><b>Arjun Mehta</b><small>PMU Inspector · GOV-2026-1001</small></div></div><button data-profile-action="account">◉ My profile</button><button data-profile-action="settings">⚙ Account settings</button><hr><button data-profile-action="logout" class="logout-action">↪ Log out</button>`;document.body.appendChild(menu);menu.querySelector('[data-profile-action="account"]').onclick=()=>{menu.remove();showToast('Profile details are verified through your Government Employee ID.')};menu.querySelector('[data-profile-action="settings"]').onclick=()=>{menu.remove();showToast('Account settings will be managed through the official identity service.')};menu.querySelector('[data-profile-action="logout"]').onclick=logout}
-async function logout(){try{await api('/api/auth/logout',{method:'POST',body:'{}'})}catch{}delete sessionStorage.saarthiToken;if(dashboardSyncTimer){clearInterval(dashboardSyncTimer);dashboardSyncTimer=null}clearInterval(window.partnerDashboardSync);clearInterval(window.partnerEvidenceSync);$('#profile-menu')?.remove();$('#partner-portal')?.remove();showLanding();showToast('You have been logged out securely.')}
-function vcModal(site){return `<h2>Initiate surprise VC</h2><p>A secure verification request will be sent immediately and retained in the audit trail.</p><form id="vc-form"><div class="form-grid"><label class="field full">Project<select name="site">${state.data.sites.map(s=>`<option ${s.name===site?'selected':''}>${esc(s.name)}</option>`).join('')}</select></label><label class="field full">Contact / role<input name="contact" placeholder="Project Incharge / Staff / Beneficiary" required></label></div><div class="form-actions"><button type="button" class="secondary" id="close-form">Cancel</button><button class="primary">Send VC request</button></div></form>`}
-let leafletLoader;
-function ensureLeaflet(){if(window.L)return Promise.resolve(window.L);if(leafletLoader)return leafletLoader;leafletLoader=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';script.integrity='sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=';script.crossOrigin='';script.onload=()=>resolve(window.L);script.onerror=reject;document.head.appendChild(script)});return leafletLoader}
-function addMapTiles(map){L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{subdomains:'abcd',maxZoom:19,maxNativeZoom:18,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:1,attribution:'© OpenStreetMap contributors © CARTO'}).addTo(map)}
-function initIndiaMap(){const el=$('#india-project-map');if(!el)return;const point=state.data.sites.find(site=>Number.isFinite(site.lat)&&Number.isFinite(site.lng));if(!point){el.innerHTML='<div class="map-fallback">No registered project has a map location yet.</div>';return}const delta=.035,bounds=[point.lng-delta,point.lat-delta,point.lng+delta,point.lat+delta].map(value=>value.toFixed(6)).join('%2C');const marker=`${point.lat.toFixed(6)}%2C${point.lng.toFixed(6)}`;el.innerHTML=`<iframe class="official-map-frame" title="Registered project location map" loading="eager" src="https://www.openstreetmap.org/export/embed.html?bbox=${bounds}&layer=mapnik&marker=${marker}"></iframe><div class="official-map-label"><b>${esc(point.name)}</b><span>${esc(point.district)}, ${esc(point.state)}</span></div>`}
-async function initInspectionMap(){const el=$('#inspection-geo-map');if(!el)return;try{await ensureLeaflet();const map=L.map(el,{scrollWheelZoom:true,zoomControl:true,zoomAnimation:false,fadeAnimation:false,markerZoomAnimation:false,inertia:false,preferCanvas:true}).setView([20.5937,78.9629],5);window.inspectionGeo={map,marker:null,accuracyCircle:null,point:null};const error=document.createElement('div');error.className='map-service-error hidden';error.textContent='Map tiles could not load. GPS capture and the inspection report remain available.';el.append(error);const tiles=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors',crossOrigin:true});let tileFailureTimer;tiles.on('tileerror',()=>{clearTimeout(tileFailureTimer);tileFailureTimer=setTimeout(()=>error.classList.remove('hidden'),800)}).addTo(map);el.addEventListener('wheel',event=>event.stopPropagation(),{passive:true});el.addEventListener('pointerdown',event=>event.stopPropagation());requestAnimationFrame(()=>map.invalidateSize({animate:false}));setTimeout(()=>map.invalidateSize({animate:false}),160);const capture=$('#get-current-location'),center=$('#center-geo-pin'),expand=$('#expand-geo-map');center.title='Use device location to center map';const applyPosition=(position,announce)=>{const {latitude,longitude,accuracy}=position.coords,point=[latitude,longitude],capturedAt=new Date(position.timestamp),geo=window.inspectionGeo;geo.point=point;if(geo.marker)geo.marker.setLatLng(point);else geo.marker=L.marker(point,{title:'Verified inspection location'}).addTo(map);if(geo.accuracyCircle)geo.accuracyCircle.setLatLng(point).setRadius(accuracy);else geo.accuracyCircle=L.circle(point,{radius:accuracy,color:'#1a5ca8',weight:1,fillColor:'#3d83cf',fillOpacity:.14}).addTo(map);geo.marker.bindPopup(`<b>Verified inspection location</b><br>${latitude.toFixed(6)}, ${longitude.toFixed(6)}<br>Accuracy: ±${Math.round(accuracy)} m`);map.setView(point,16,{animate:false});const locationValue=`${latitude.toFixed(6)}, ${longitude.toFixed(6)} · accuracy ±${Math.round(accuracy)}m · ${capturedAt.toLocaleString()}`;$('#inspection-location').value=locationValue;$('#geo-details').innerHTML=`<span class="geo-dot verified">✓</span><span><b>GPS captured</b> · ${latitude.toFixed(6)}, ${longitude.toFixed(6)} · ±${Math.round(accuracy)} m</span>`;capture.textContent='↻ Refresh precise GPS';capture.disabled=false;center.disabled=false;center.title='Center on captured GPS location';if(announce)showToast('Precise GPS location captured and pinned on the map.')};const requestLocation=(announce=false)=>{if(!navigator.geolocation){center.disabled=true;center.title='Capture GPS first — this device does not provide geolocation';showToast('This browser does not support GPS location.');return}navigator.geolocation.getCurrentPosition(position=>applyPosition(position,announce),locationError=>{center.disabled=true;center.title='Capture GPS first — location permission is required';$('#geo-details').innerHTML='<span class="geo-dot error">!</span><span>Location unavailable. Enable device location and capture GPS first.</span>';showToast(locationError.code===1?'Location permission was not granted.':'Could not obtain location. Enable GPS and try again.')},{enableHighAccuracy:true,timeout:12000,maximumAge:0})};center.onclick=()=>{if(window.inspectionGeo?.point){map.setView(window.inspectionGeo.point,16,{animate:false});window.inspectionGeo.marker.openPopup();return}center.disabled=true;center.title='Locating device…';requestLocation(false)};expand.onclick=()=>{el.classList.toggle('expanded');expand.textContent=el.classList.contains('expanded')?'Collapse map ↙':'Expand map ↗';setTimeout(()=>{map.invalidateSize({animate:false});if(window.inspectionGeo?.point)map.setView(window.inspectionGeo.point,16,{animate:false})},80)};capture.onclick=()=>{capture.disabled=true;capture.textContent='Locating device…';$('#geo-details').innerHTML='<span class="geo-dot locating"></span><span>Acquiring high-accuracy GPS signal…</span>';requestLocation(true)}}catch{el.innerHTML='<div class="map-fallback">Map service unavailable. GPS coordinates can still be captured and included in the report.</div>'}}
-function openModal(html){$('#modal-content').innerHTML=html;$('#modal').classList.remove('hidden');if($('#inspection-geo-map'))setTimeout(initInspectionMap,0)}function closeModal(){$('#modal').classList.add('hidden')}
+
+function notificationsModal(){
+  const notifs = state.notifications || [];
+  return `
+    <h2>System Anomaly Notifications</h2>
+    <p style="margin:5px 0 16px;color:var(--muted);font-size:12px">Automated anomaly detection across compliance thresholds, attendance drops, and 0% category violations.</p>
+    <div class="notification-list" style="display:flex;flex-direction:column;gap:12px;max-height:480px;overflow-y:auto">
+      ${notifs.length ? notifs.map(n => `
+        <div class="card" style="padding:14px;border-left:4px solid ${n.resolved ? '#167d59' : n.severity === 'critical' ? '#e53935' : '#f59e0b'};background:${n.resolved ? '#f9fbfa' : '#fff'}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span class="badge ${n.severity === 'critical' ? 'high' : 'warning'}">${esc((n.severity || 'warning').toUpperCase())} · ${esc(n.type)}</span>
+            <span style="font-size:11px;color:var(--muted)">${formatRelativeOrDate(n.createdAt)}</span>
+          </div>
+          <h4 style="margin:0 0 4px;font-size:14px">${esc(n.projectName)}</h4>
+          <p style="margin:0 0 8px;font-size:13px;color:#333">${esc(n.message)}</p>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px">Rule Violated: <code>${esc(n.ruleViolated)}</code> · Threshold: ${JSON.stringify(n.thresholdValue)}</div>
+          ${!n.resolved ? `
+            <div style="display:flex;gap:8px">
+              <input type="text" id="resolve-note-${esc(n._id || n.id)}" placeholder="Resolution notes (e.g. Verified on-site)" style="flex:1;padding:6px 10px;font-size:12px;border:1px solid #ccc;border-radius:6px" />
+              <button class="secondary resolve-notif-btn" data-notif-id="${esc(n._id || n.id)}" style="font-size:11px;padding:6px 12px">Resolve</button>
+            </div>
+          ` : `<span style="font-size:11px;color:#167d59;font-weight:600">✓ Resolved by ${esc(n.resolvedBy || 'Inspector')} · "${esc(n.resolutionNotes || 'Action taken')}"</span>`}
+        </div>
+      `).join('') : '<div class="empty">No system anomaly notifications. All projects operating within thresholds.</div>'}
+    </div>
+  `;
+}
+
+async function refreshNotificationBadge() {
+  try {
+    const r = await api('/api/notifications');
+    if (!r.ok) return;
+    const data = await r.json();
+    state.notifications = data.notifications || [];
+    const count = data.unresolvedCount || 0;
+    const badge = $('#notif-counter');
+    if (badge) {
+      badge.textContent = count;
+      badge.classList.toggle('hidden', count === 0);
+    }
+  } catch(e) {}
+}
+
 function bind(){
   document.querySelectorAll('[data-view-go]').forEach(x=>x.onclick=()=>{state.view=x.dataset.viewGo;render()});
   $('#open-report').onclick=()=>openModal(inspectionModal());
-  const notifications=$('.icon-btn'); if(notifications) notifications.onclick=()=>openModal(notificationsModal());
+  const notifBtn=$('#notif-btn') || $('.icon-btn'); if(notifBtn) notifBtn.onclick=()=>openModal(notificationsModal());
   const profile=$('.profile'); if(profile) profile.onclick=toggleProfileMenu;
   const reportTop=$('#report-top'); if(reportTop) reportTop.onclick=()=>openModal(reportModal());
   const newInspection=$('#new-inspection'); if(newInspection) newInspection.onclick=()=>openModal(inspectionModal());
@@ -907,6 +1412,17 @@ function bind(){
   if(stateFilter){const applyState=()=>{const chosen=stateFilter.value,q=($('#search').value||'').toLowerCase(),shown=state.data.sites.filter(s=>!s.inspectionAssigned&&(!chosen||s.state===chosen)&&Object.values(s).join(' ').toLowerCase().includes(q));$('#projects-grid').innerHTML=projectCards(shown);bindProjectCards();$('#state-summary').textContent=chosen?`${shown.length} project${shown.length===1?'':'s'} available in ${chosen}`:`${shown.length} projects available for inspection`;};stateFilter.onchange=applyState;$('#search').oninput=applyState;}
   document.querySelectorAll('[data-start-inspection]').forEach(button=>button.onclick=()=>startGroundInspection(button.dataset.startInspection));
   document.querySelectorAll('[data-vc]').forEach(button=>button.onclick=()=>openModal(vcModal(button.dataset.vc)));
+
+  document.querySelectorAll('.start-broadcast-btn').forEach(btn => {
+    btn.onclick = () => startProjectBroadcast(btn.dataset.projId);
+  });
+  document.querySelectorAll('.stop-broadcast-btn').forEach(btn => {
+    btn.onclick = () => stopProjectBroadcast(btn.dataset.projId);
+  });
+  document.querySelectorAll('.watch-stream-btn').forEach(btn => {
+    btn.onclick = () => watchProjectStream(btn.dataset.projId);
+  });
+
   const startCamera=$('#start-camera'), stopCamera=$('#stop-camera');
   if(startCamera) startCamera.onclick=startLiveCamera;
   if(stopCamera) stopCamera.onclick=stopLiveCamera;
@@ -937,7 +1453,7 @@ async function pollCameraSignals(){if(!window.cameraRoom||!window.peer)return;co
 const liveCss=`.feed.demo{min-height:240px;isolation:isolate}.feed.demo:after{content:'';position:absolute;inset:0;z-index:-2;background:radial-gradient(ellipse at 25% 35%,#4c795f 0 6%,transparent 7%),radial-gradient(ellipse at 65% 67%,#759770 0 5%,transparent 6%),linear-gradient(115deg,#0b211c,#1c4a3c 55%,#0e3027);animation:feedShift 7s ease-in-out infinite alternate}.feed video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:-1;background:#102a22}.feed.demo .scan{position:absolute;inset:0;background:linear-gradient(transparent 48%,rgba(211,243,106,.16) 50%,transparent 52%);background-size:100% 12px;opacity:.35;pointer-events:none}.feed .cam-time{position:absolute;left:15px;top:45px;font:11px monospace;letter-spacing:.5px}.feed button{position:absolute;right:14px;top:13px;border:1px solid #ffffff66;background:#143c30cc;color:white;border-radius:6px;padding:6px 8px;font-size:11px;font-weight:bold;cursor:pointer}.feed .camera-start{left:50%;top:50%;right:auto;transform:translate(-50%,-50%);background:#d5f36a;color:#0b3d30;border:0;padding:10px 13px;white-space:nowrap}.feed.camera-active .camera-start{display:none}.feed.camera-active:after{display:none}@keyframes feedShift{from{transform:scale(1) translateX(-1%)}to{transform:scale(1.12) translateX(2%)}}`;const liveStyle=document.createElement('style');liveStyle.textContent=liveCss;document.head.appendChild(liveStyle);
 async function assign(siteId,details={}){const r=await api('/api/assign',{method:'POST',body:JSON.stringify({siteId,...details})});const x=await r.json();if(!r.ok)return showToast(x.error||'Could not assign this inspection.');await load();showToast(`Inspection assigned to ${x.inspector}: ${x.assignmentBasis}.`)}
 async function startGroundInspection(inspectionId){const button=$(`[data-start-inspection="${inspectionId}"]`);if(button){button.disabled=true;button.textContent='Starting…'}const r=await api('/api/inspections/start',{method:'POST',body:JSON.stringify({inspectionId})}),data=await r.json();if(!r.ok){if(button){button.disabled=false;button.textContent='Start on ground'}return showToast(data.error||'Could not start the inspection.')}await load();showToast('On-ground inspection started. The registered organisation has been notified.')}
-$('#close-modal').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};document.addEventListener('click',async e=>{if(e.target.id==='close-form')closeModal();if(e.target.closest('.nav')){state.view=e.target.closest('.nav').dataset.view;render()}if(e.target.closest('#inspection-assign-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const form=e.target.closest('form'),data=Object.fromEntries(new FormData(form)),method=e.target.value;if(String(data.location||'').startsWith('GPS location'))return showToast('Capture the current GPS location before assigning this inspection.');if(method==='specific'&&!data.inspectorName)return showToast('Select an inspector before using Specific assign.');const button=e.target;button.disabled=true;button.textContent='Assigning…';await assign(data.siteId,{due:data.due,priority:data.priority,notes:data.notes,finding:data.finding,evidence:data.evidence,location:data.location,inspectorName:method==='specific'?data.inspectorName:''});closeModal();state.view='inspections';render()}}if(e.target.closest('#report-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const f=new FormData(e.target.closest('form'));const data=Object.fromEntries(f);if(String(data.location||'').startsWith('GPS location'))return showToast('Capture the current GPS location before submitting the report.');await api('/api/reports',{method:'POST',body:JSON.stringify(data)});closeModal();state.view='reports';await load();showToast('Verified inspection report submitted')}}if(e.target.closest('#vc-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const data=Object.fromEntries(new FormData(e.target.closest('form')));await api('/api/vc',{method:'POST',body:JSON.stringify(data)});closeModal();await load();showToast('Secure VC verification request sent')}}});
+$('#close-modal').onclick=closeModal;$('#modal').onclick=e=>{if(e.target.id==='modal')closeModal()};document.addEventListener('click',async e=>{if(e.target.classList.contains('resolve-notif-btn')){const notifId=e.target.dataset.notifId;const noteInput=$(`#resolve-note-${notifId}`);const notes=noteInput?noteInput.value.trim():'Resolved via dashboard';e.target.disabled=true;e.target.textContent='Resolving…';try{const res=await api(`/api/notifications/${notifId}/resolve`,{method:'PUT',body:JSON.stringify({notes})});if(res.ok){showToast('Anomaly notification resolved.');await refreshNotificationBadge();openModal(notificationsModal());}else{showToast('Could not resolve notification.');e.target.disabled=false;e.target.textContent='Resolve';}}catch(err){showToast('Could not resolve notification.');e.target.disabled=false;e.target.textContent='Resolve';}return;}if(e.target.id==='close-form')closeModal();if(e.target.closest('.nav')){state.view=e.target.closest('.nav').dataset.view;render()}if(e.target.closest('#inspection-assign-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const form=e.target.closest('form'),data=Object.fromEntries(new FormData(form)),method=e.target.value;if(String(data.location||'').startsWith('GPS location'))return showToast('Capture the current GPS location before assigning this inspection.');if(method==='specific'&&!data.inspectorName)return showToast('Select an inspector before using Specific assign.');const button=e.target;button.disabled=true;button.textContent='Assigning…';await assign(data.siteId,{due:data.due,priority:data.priority,notes:data.notes,finding:data.finding,evidence:data.evidence,location:data.location,inspectorName:method==='specific'?data.inspectorName:''});closeModal();state.view='inspections';render()}}if(e.target.closest('#report-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const f=new FormData(e.target.closest('form'));const data=Object.fromEntries(f);if(String(data.location||'').startsWith('GPS location'))return showToast('Capture the current GPS location before submitting the report.');await api('/api/reports',{method:'POST',body:JSON.stringify(data)});closeModal();state.view='reports';await load();showToast('Verified inspection report submitted')}}if(e.target.closest('#vc-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const data=Object.fromEntries(new FormData(e.target.closest('form')));await api('/api/vc',{method:'POST',body:JSON.stringify(data)});closeModal();await load();showToast('Secure VC verification request sent')}}});
 function showAuth(){
   document.querySelector('#public-portal')?.remove();
   let gate=document.querySelector('#auth-gate'); if(!gate){gate=document.createElement('div');gate.id='auth-gate';document.body.appendChild(gate)}

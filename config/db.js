@@ -44,79 +44,8 @@ const initialSites = [
   { id:'P-4011', name:'Bengaluru Skill Academy', district:'Bengaluru', state:'Karnataka', scheme:'PM-DAKSH', risk:'Medium', score:63, camera:'Live', status:'Live', attendance:78, lastInspection:'10 Aug 2026', lat:12.9716, lng:77.5946, inspectionAssigned:false, owner:'NGO/2026/1006', assignedInspector:'Meera Iyer', assignedInspectorId:'GOV-2026-1004' }
 ];
 
-const initialLogs = [
-  {
-    id: 'LOG-1005',
-    timestamp: new Date(Date.now() - 12 * 60 * 1000),
-    projectId: 'P-2041',
-    projectName: 'Udaan Skill Centre (sample)',
-    state: 'Uttar Pradesh',
-    actionType: 'checklist_toggle',
-    actorId: 'GOV-2026-1001',
-    actorName: 'Arjun Mehta (PMU Inspector)',
-    field: 'Fire extinguishers & safety gear',
-    oldValue: 'Unchecked',
-    newValue: 'Checked',
-    description: 'Updated Infrastructure checklist: Fire safety compliance confirmed on-site'
-  },
-  {
-    id: 'LOG-1004',
-    timestamp: new Date(Date.now() - 12 * 60 * 1000),
-    projectId: 'P-2041',
-    projectName: 'Udaan Skill Centre (sample)',
-    state: 'Uttar Pradesh',
-    actionType: 'score_changed',
-    actorId: 'GOV-2026-1001',
-    actorName: 'Arjun Mehta (PMU Inspector)',
-    field: 'Compliance Score',
-    oldValue: '50%',
-    newValue: '58%',
-    delta: '+8%',
-    description: 'Compliance score recalculated from 50% to 58% (+8%)'
-  },
-  {
-    id: 'LOG-1003',
-    timestamp: new Date(Date.now() - 45 * 60 * 1000),
-    projectId: 'P-1872',
-    projectName: 'Saksham Residential Institute',
-    state: 'Rajasthan',
-    actionType: 'status_changed',
-    actorId: 'SYSTEM',
-    actorName: 'System / CCTV Daemon',
-    field: 'Status',
-    oldValue: 'Closed',
-    newValue: 'Live',
-    description: 'Project verified online; status updated to Live'
-  },
-  {
-    id: 'LOG-1002',
-    timestamp: new Date(Date.now() - 2 * 3600 * 1000),
-    projectId: 'P-4011',
-    projectName: 'Bengaluru Skill Academy',
-    state: 'Karnataka',
-    actionType: 'comment',
-    actorId: 'GOV-2026-1001',
-    actorName: 'Arjun Mehta (PMU Inspector)',
-    field: 'Inspector Observation',
-    oldValue: '',
-    newValue: 'Biometric fingerprint scanner synced with NIC attendance gateway.',
-    description: 'Inspector added observation note: Biometric gateway verified'
-  },
-  {
-    id: 'LOG-1001',
-    timestamp: new Date(Date.now() - 5 * 3600 * 1000),
-    projectId: 'P-2234',
-    projectName: 'Aasha Rehabilitation Centre',
-    state: 'Bihar',
-    actionType: 'inspection',
-    actorId: 'GOV-2026-1002',
-    actorName: 'Nisha Kapoor (PMU Inspector)',
-    field: 'Inspection Assignment',
-    oldValue: 'Unassigned',
-    newValue: 'Assigned',
-    description: 'Surprise on-ground inspection scheduled for compliance verification'
-  }
-];
+// Empty initial logs so only real, authentic system events populate the audit trail
+const initialLogs = [];
 
 const initialUsers = [
   { id: 'GOV-2026-1001', employeeId: 'GOV-2026-1001', name: 'Arjun Mehta', email: 'arjun.mehta@dosje.gov.in', password: 'Saarthi@2026', role: 'PMU Inspector', assignedProjectIds: ['P-2041', 'P-2234'] },
@@ -129,8 +58,24 @@ const initialUsers = [
 
 let isConnected = false;
 
+// Attach Mongoose connection event listeners for auto-reconnect & connection resilience
+mongoose.connection.on('disconnected', () => {
+  console.warn('[Database] Mongoose connection lost. Operating in resilient hybrid fallback mode.');
+  isConnected = false;
+});
+mongoose.connection.on('reconnected', () => {
+  console.log('[Database] Mongoose reconnected to MongoDB Atlas.');
+  isConnected = true;
+});
+mongoose.connection.on('error', (err) => {
+  console.error('[Database] Mongoose error:', err.message);
+});
+
 async function seedDatabase() {
   try {
+    // Clean up any historical fake seeded logs if they exist
+    await AuditLog.deleteMany({ id: { $in: ['LOG-1001', 'LOG-1002', 'LOG-1003', 'LOG-1004', 'LOG-1005'] } });
+
     const projectCount = await Project.countDocuments();
     if (projectCount === 0) {
       console.log('[Database Seed] Seeding initial projects into MongoDB...');
@@ -159,9 +104,6 @@ async function seedDatabase() {
       }
       await ChecklistItem.insertMany(itemsToInsert);
 
-      console.log('[Database Seed] Seeding initial audit logs...');
-      await AuditLog.insertMany(initialLogs);
-
       console.log('[Database Seed] Seeding initial users...');
       await User.insertMany(initialUsers);
 
@@ -182,7 +124,8 @@ async function connectDB() {
   try {
     console.log('[Database] Connecting to MongoDB Atlas...');
     await mongoose.connect(uri, {
-      serverSelectionTimeoutMS: 5000
+      serverSelectionTimeoutMS: 5000,
+      autoIndex: true
     });
     isConnected = true;
     console.log('[Database] Connected to MongoDB Atlas successfully.');
