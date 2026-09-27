@@ -43,7 +43,8 @@ let memoryNotifications = [];
 const streamStatusMap = new Map();
 let memoryEmployees = JSON.parse(JSON.stringify(initialUsers));
 let memoryPartnerAccounts = [
-  { organisation: 'Udaan Skill Centre', registrationId: 'NGO/2026/1001', email: 'udan@dosje-demo.org', password: 'Saarthi@2026', role: 'Project / NGO Administrator' }
+  { organisation: 'Udaan Skill Centre', registrationId: 'NGO/2026/1001', email: 'udan@dosje-demo.org', password: 'Saarthi@2026', role: 'Project / NGO Administrator' },
+  { organisation: 'Udaan Skill Centre Staff', registrationId: 'NGO/2026/1001', email: 'staff@dosje-demo.org', password: 'Saarthi@2026', role: 'ngo_staff' }
 ];
 const pendingVerifications = new Map();
 const pendingPartnerVerifications = new Map();
@@ -990,13 +991,15 @@ app.post('/api/vc', (req, res) => {
 // Partner NGO Portal
 app.get('/api/partner/projects', (req, res) => {
   const user = sessionUser(req);
-  if (user?.role !== 'Project / NGO Administrator') return res.status(403).json({ error: 'Organisation access required.' });
+  const isNgo = user?.role === 'Project / NGO Administrator' || user?.role === 'ngo_staff';
+  if (!isNgo) return res.status(403).json({ error: 'Organisation access required.' });
   return res.json({ projects: memorySites.filter(site => site.owner === user.registrationId) });
 });
 
 app.get('/api/partner/dashboard', (req, res) => {
   const user = sessionUser(req);
-  if (user?.role !== 'Project / NGO Administrator') return res.status(403).json({ error: 'Organisation access required.' });
+  const isNgo = user?.role === 'Project / NGO Administrator' || user?.role === 'ngo_staff';
+  if (!isNgo) return res.status(403).json({ error: 'Organisation access required.' });
   const projects = memorySites.filter(site => site.owner === user.registrationId);
   const projectNames = new Set(projects.map(site => site.name));
   const projectInspections = memoryInspections.filter(item => projectNames.has(item.site));
@@ -1020,7 +1023,8 @@ app.get('/api/partner/dashboard', (req, res) => {
 
 app.post('/api/partner/projects', (req, res) => {
   const user = sessionUser(req);
-  if (user?.role !== 'Project / NGO Administrator') return res.status(403).json({ error: 'Organisation access required.' });
+  const isNgo = user?.role === 'Project / NGO Administrator' || user?.role === 'ngo_staff';
+  if (!isNgo) return res.status(403).json({ error: 'Organisation access required.' });
   const data = req.body;
   const name = String(data.name || '').trim();
   const state = String(data.state || '').trim();
@@ -1160,10 +1164,18 @@ app.get('/api/attendance/:projectId', async (req, res) => {
   });
 });
 
-app.post('/api/attendance', async (req, res) => {
+const handleAttendanceSubmit = async (req, res) => {
+  const user = sessionUser(req);
+  if (!user) {
+    return res.status(401).json({ error: 'Authentication required.' });
+  }
+  const allowedRoles = ['ngo_staff', 'Project / NGO Administrator'];
+  if (!allowedRoles.includes(user.role)) {
+    return res.status(403).json({ error: 'Forbidden: Only authorized NGO staff may submit staff attendance.' });
+  }
+
   const data = req.body;
-  const user = sessionUser(req) || { name: 'NGO Staff', role: 'Project / NGO Administrator' };
-  const { projectId, staffName, staffId, date, checkIn, checkOut, status, geoLocation } = data;
+  const { projectId, staffName, staffId, date, checkIn, checkOut, status, geoLocation, location } = data;
 
   if (!projectId || !staffName || !date || !checkIn) {
     return res.status(400).json({ error: 'Project ID, staff name, date, and check-in time are required.' });
@@ -1181,7 +1193,8 @@ app.post('/api/attendance', async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found.' });
 
   const recordId = 'ATT-' + Math.floor(1000 + Math.random() * 9000);
-  const locCaptured = Boolean(geoLocation?.captured || (geoLocation?.latitude && geoLocation?.longitude));
+  const geo = geoLocation || location || null;
+  const locCaptured = Boolean(geo?.captured || (geo?.latitude && geo?.longitude));
 
   const record = {
     id: recordId,
@@ -1195,10 +1208,10 @@ app.post('/api/attendance', async (req, res) => {
     status: status || 'Present',
     geoLocation: {
       captured: locCaptured,
-      latitude: locCaptured ? Number(geoLocation.latitude) : null,
-      longitude: locCaptured ? Number(geoLocation.longitude) : null,
-      accuracy: locCaptured ? Number(geoLocation.accuracy) || 10 : null,
-      capturedAt: locCaptured ? new Date(geoLocation.capturedAt || Date.now()) : null
+      latitude: locCaptured ? Number(geo.latitude) : null,
+      longitude: locCaptured ? Number(geo.longitude) : null,
+      accuracy: locCaptured ? Number(geo.accuracy) || 10 : null,
+      capturedAt: locCaptured ? new Date(geo.capturedAt || Date.now()) : null
     },
     submittedBy: `${user.name} (${user.role})`,
     createdAt: new Date()
@@ -1218,15 +1231,15 @@ app.post('/api/attendance', async (req, res) => {
   const newAttendance = sampleCount > 0 ? Math.round((totalScoreWeight / sampleCount) * 100) : oldAttendance;
   project.attendance = newAttendance;
 
-  // Create real AuditLog entry
+  // Create real AuditLog entry with actionType: 'attendance_marked'
   const logEntry = {
     id: 'LOG-' + Math.floor(1000 + Math.random() * 9000),
     timestamp: new Date(),
     projectId: project.id,
     projectName: project.name,
     state: project.state,
-    actionType: 'attendance_submitted',
-    actorId: user.employeeId || 'NGO-STAFF',
+    actionType: 'attendance_marked',
+    actorId: user.employeeId || user.registrationId || 'NGO-STAFF',
     actorName: `${user.name} (${user.role})`,
     field: 'Staff Attendance Marked',
     oldValue: `${oldAttendance}%`,
@@ -1262,11 +1275,15 @@ app.post('/api/attendance', async (req, res) => {
   return res.status(201).json({
     ok: true,
     record,
+    attendance: newAttendance,
     attendanceScore: newAttendance,
     projectAttendance: newAttendance,
     log: logEntry
   });
-});
+};
+
+app.post('/api/attendance', handleAttendanceSubmit);
+app.put('/api/attendance', handleAttendanceSubmit);
 
 // ==========================================
 // Anomaly Alerts & Settings Endpoints
@@ -1451,8 +1468,11 @@ app.post('/api/stream/:projectId/stop', async (req, res) => {
 
 // Static Assets & SPA Fallback
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/ngo', (req, res) => {
+  res.sendFile('index.html', { root: path.join(__dirname, 'public') });
+});
 app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.sendFile('index.html', { root: path.join(__dirname, 'public') });
 });
 
 // Socket.io Connection Event

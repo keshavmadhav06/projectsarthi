@@ -851,39 +851,48 @@ function cctv(){
       <div class="card-head">
         <div>
           <h2>Authorized Live Stream & CCTV Monitoring</h2>
-          <p style="margin:5px 0 0;color:var(--muted);font-size:12px">WebRTC broadcast over real-time gateway. NGO & field cameras stream live inspections to command centre monitors.</p>
+          <p style="margin:5px 0 0;color:var(--muted);font-size:12px">Connect field mobile cameras via secure shareable links. Live video frames are relayed in real time to this monitoring console.</p>
         </div>
-        <span class="badge live">● WEBRTC ENCRYPTED</span>
+        <span class="badge live">● AI SCREENING ACTIVE</span>
       </div>
       <div class="ai-monitor-note">
-        <b>Live Video Protocol:</b> Direct peer streaming with STUN NAT traversal. Initiating or terminating a video broadcast creates an immutable audit trail entry.
+        <b>Field Camera Relay Protocol:</b> Click "Start Broadcast" on any project card to generate a unique phone camera link. Open the link on an authorized field smartphone to stream live video directly to the console.
       </div>
     </div>
 
     <div class="project-grid" style="grid-template-columns:repeat(auto-fit, minmax(340px, 1fr));gap:20px;margin-bottom:24px">
       ${sitesList.map(p => {
-        const isStreaming = Boolean(window._activeBroadcasts && window._activeBroadcasts[p.id]);
+        const isLive = Boolean(window._projectRelayPollers && window._projectRelayPollers[p.id]);
         return `
-          <div class="card stream-card" data-stream-proj="${esc(p.id)}" style="display:flex;flex-direction:column;gap:12px;padding:16px">
+          <div class="card stream-card" id="stream-card-${esc(p.id)}" data-stream-proj="${esc(p.id)}" style="display:flex;flex-direction:column;gap:12px;padding:16px">
             <div style="display:flex;justify-content:space-between;align-items:center">
               <div>
                 <h3 style="margin:0;font-size:15px;color:var(--deep)">${esc(p.name)}</h3>
                 <small style="color:var(--muted)">${esc(p.scheme)} · ${esc(p.district)}, ${esc(p.state)}</small>
               </div>
-              <span class="stream-pill ${isStreaming ? 'live' : 'offline'}" id="stream-pill-${esc(p.id)}">${isStreaming ? '● LIVE' : '○ OFFLINE'}</span>
+              <span class="stream-pill ${isLive ? 'live' : 'offline'}" id="stream-pill-${esc(p.id)}">${isLive ? '● LIVE' : '○ OFFLINE'}</span>
             </div>
 
-            <div class="stream-video-container" id="stream-box-${esc(p.id)}" style="position:relative;background:#0c2642;border-radius:8px;height:210px;overflow:hidden;display:flex;align-items:center;justify-content:center">
-              <video id="stream-video-${esc(p.id)}" autoplay playsinline controls style="width:100%;height:100%;object-fit:cover;display:none"></video>
-              <div class="stream-standby" id="stream-standby-${esc(p.id)}" style="text-align:center;color:#7cb9a2">
-                <div style="font-size:24px;margin-bottom:6px">📹</div>
+            <div class="stream-video-container" id="stream-box-${esc(p.id)}" style="position:relative;background:#0c2642;border-radius:8px;height:220px;overflow:hidden;display:flex;align-items:center;justify-content:center">
+              <img class="mobile-cctv-frame" id="stream-frame-${esc(p.id)}" alt="Live field camera feed" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:none;z-index:1" />
+              <div class="stream-standby" id="stream-standby-${esc(p.id)}" style="text-align:center;color:#7cb9a2;z-index:0">
+                <div style="font-size:26px;margin-bottom:6px">📹</div>
                 <div style="font-weight:700;font-size:13px;letter-spacing:0.5px">STANDBY · NO ACTIVE FEED</div>
-                <small style="color:#577e70;font-size:11px">Ready for field officer or NGO camera broadcast</small>
+                <small style="color:#577e70;font-size:11px">Click "Start Broadcast" to generate phone camera link</small>
               </div>
               <div class="stream-hud" id="stream-hud-${esc(p.id)}" style="display:none;position:absolute;top:8px;left:8px;right:8px;justify-content:space-between;align-items:center;pointer-events:none;z-index:2">
                 <span class="hud-pill" style="background:#167d59;color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px">● LIVE FEED</span>
                 <span class="hud-clock" data-clock style="color:#d5f36a;font-family:monospace;font-size:11px;background:#061c31aa;padding:2px 6px;border-radius:4px"></span>
               </div>
+            </div>
+
+            <div class="stream-invite-box hidden" id="stream-invite-${esc(p.id)}" style="background:#f1f5f9;border:1px solid #cbd5e1;border-radius:8px;padding:10px;font-size:12px">
+              <div style="font-weight:700;margin-bottom:4px;color:var(--deep)">📱 Share Phone Camera Link:</div>
+              <div style="display:flex;gap:6px">
+                <input type="text" readonly id="stream-link-input-${esc(p.id)}" style="flex:1;padding:5px 8px;font-size:11px;border:1px solid #cbd5e1;border-radius:4px;background:#fff" />
+                <button class="secondary copy-stream-link-btn" data-proj-id="${esc(p.id)}" style="font-size:11px;padding:5px 10px;white-space:nowrap">Copy Link</button>
+              </div>
+              <small style="display:block;margin-top:4px;color:var(--muted)">Open on field smartphone to stream live video directly.</small>
             </div>
 
             <div class="stream-actions" style="display:flex;gap:8px;flex-wrap:wrap">
@@ -901,74 +910,62 @@ function cctv(){
 function attendance(){
   const d = state.data || {};
   const sitesList = d.sites || [];
-  const todayStr = new Date().toISOString().split('T')[0];
   return `
-    <div class="logs-header-box">
+    <div class="logs-header-box" style="margin-bottom:18px">
       <div>
-        <h2 style="font-size:20px;margin-bottom:4px">NGO Staff Attendance Portal</h2>
-        <p style="font-size:12px;color:var(--muted);margin:0">Log verified staff attendance, capture GPS coordinates, and maintain automated compliance metrics.</p>
+        <h2 style="font-size:20px;margin-bottom:4px">Official Attendance Oversight</h2>
+        <p style="font-size:12px;color:var(--muted);margin:0">Real-time attendance telemetry submitted by authorized NGO field staff. Immutable logs and compliance scoring.</p>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <label style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px">
+          Select Project:
+          <select id="att-proj-select" style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e1;font-size:12px;font-weight:600;background:#fff">
+            ${sitesList.map(s => `<option value="${esc(s.id)}">${esc(s.name)} (${esc(s.district)}, ${esc(s.state)})</option>`).join('')}
+          </select>
+        </label>
+        <button class="secondary" id="refresh-att-btn" style="font-size:11px;padding:6px 12px">↻ Refresh Telemetry</button>
       </div>
     </div>
-    <div class="attendance-container" style="display:grid;grid-template-columns:minmax(320px, 420px) 1fr;gap:20px;align-items:start">
-      <div class="card" style="padding:20px">
-        <h3 style="margin-top:0;font-size:16px;color:var(--deep)">Submit Daily Attendance</h3>
-        <p style="font-size:12px;color:var(--muted);margin-bottom:16px">Future dates are blocked. Marking attendance updates the project's attendance score in real time.</p>
-        <form id="attendance-submit-form" style="display:flex;flex-direction:column;gap:12px">
-          <label style="font-size:12px;font-weight:600">
-            Project / Scheme
-            <select name="projectId" id="att-proj-select" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc">
-              ${sitesList.map(s => `<option value="${esc(s.id)}">${esc(s.name)} (${esc(s.district)}, ${esc(s.state)})</option>`).join('')}
-            </select>
-          </label>
-          <label style="font-size:12px;font-weight:600">
-            Date (Max: Today)
-            <input type="date" name="date" id="att-date-input" value="${todayStr}" max="${todayStr}" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
-          </label>
-          <label style="font-size:12px;font-weight:600">
-            Staff Member Name
-            <input type="text" name="staffName" placeholder="e.g. Ramesh Kumar" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
-          </label>
-          <label style="font-size:12px;font-weight:600">
-            Staff ID / Biometric Code
-            <input type="text" name="staffId" placeholder="e.g. STF-2026-081" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
-          </label>
-          <div style="display:flex;gap:12px">
-            <label style="flex:1;font-size:12px;font-weight:600">
-              Check-in Time
-              <input type="time" name="checkIn" value="09:00" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
-            </label>
-            <label style="flex:1;font-size:12px;font-weight:600">
-              Check-out Time
-              <input type="time" name="checkOut" value="17:00" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
-            </label>
-          </div>
-          <label style="font-size:12px;font-weight:600">
-            Status
-            <select name="status" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc">
-              <option value="Present">Present</option>
-              <option value="Absent">Absent</option>
-              <option value="On Leave">On Leave</option>
-            </select>
-          </label>
-          <div class="partner-coordinates" style="margin-top:4px">
-            <span id="att-geo-status">GPS Stamp Optional</span>
-            <button type="button" class="secondary" id="att-capture-geo" style="font-size:11px;padding:4px 8px">Capture GPS</button>
-          </div>
-          <input type="hidden" id="att-lat" name="lat" />
-          <input type="hidden" id="att-lng" name="lng" />
-          <input type="hidden" id="att-acc" name="acc" />
-          <button type="submit" class="primary" style="margin-top:8px">Submit Attendance Record</button>
-        </form>
-      </div>
 
-      <div class="card" style="padding:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-          <h3 style="margin:0;font-size:16px;color:var(--deep)">Attendance History & Records</h3>
-          <button class="secondary" id="refresh-att-btn" style="font-size:11px;padding:4px 10px">↻ Refresh</button>
+    <div class="card" style="padding:14px 18px;margin-bottom:18px;background:#f0f9ff;border-left:4px solid #0284c7;display:flex;align-items:center;gap:14px">
+      <span style="font-size:24px">ℹ️</span>
+      <div style="font-size:12px;color:#0369a1;line-height:1.45">
+        <strong>Central Oversight Notice:</strong> Daily staff attendance is submitted by authorized field personnel via the <a href="/ngo" style="color:#0284c7;font-weight:700;text-decoration:underline">NGO Partner Portal</a>. This central command dashboard provides read-only oversight, rolling compliance metrics, GPS verification, and anomaly detection.
+      </div>
+    </div>
+
+    <div class="stats-grid" id="att-stats-overview" style="margin-bottom:20px;display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:16px">
+      <div class="card" style="padding:16px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Project</span>
+        <b style="font-size:15px;display:block;margin-top:4px" id="att-stat-proj-name">${esc(sitesList[0]?.name || '-')}</b>
+        <small style="color:var(--muted)" id="att-stat-proj-loc">${esc(sitesList[0]?.district || '')}, ${esc(sitesList[0]?.state || '')}</small>
+      </div>
+      <div class="card" style="padding:16px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Rolling Attendance</span>
+        <div style="display:flex;align-items:center;gap:10px;margin-top:4px">
+          <b style="font-size:22px;color:#0b3a6e" id="att-stat-score">${sitesList[0]?.attendance || 60}%</b>
+          <span class="badge live" id="att-stat-badge">Recorded</span>
         </div>
-        <div id="attendance-history-table">
-          <div style="padding:20px;text-align:center;color:var(--muted)">Loading attendance records…</div>
-        </div>
+        <div class="progress" style="margin-top:8px"><div class="bar" id="att-stat-bar" style="width:${sitesList[0]?.attendance || 60}%"></div></div>
+      </div>
+      <div class="card" style="padding:16px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Logged Entries</span>
+        <b style="font-size:22px;display:block;margin-top:4px;color:var(--deep)" id="att-stat-count">--</b>
+        <small style="color:var(--muted)">Verified records in database</small>
+      </div>
+      <div class="card" style="padding:16px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Today's Status</span>
+        <b style="font-size:15px;display:block;margin-top:4px" id="att-stat-today">Checking…</b>
+        <small style="color:var(--muted)">Daily field presence</small>
+      </div>
+    </div>
+
+    <div class="card" style="padding:20px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0;font-size:16px;color:var(--deep)">Verified Staff Attendance Telemetry</h3>
+      </div>
+      <div id="attendance-history-table">
+        <div style="padding:20px;text-align:center;color:var(--muted)">Loading attendance telemetry…</div>
       </div>
     </div>
   `;
@@ -976,18 +973,40 @@ function attendance(){
 
 async function loadAttendanceHistory(projectId) {
   const container = $('#attendance-history-table');
-  if (!container) return;
+  const pId = projectId || $('#att-proj-select')?.value || state.data?.sites?.[0]?.id;
+  if (!pId) return;
+
+  const project = (state.data?.sites || []).find(s => s.id === pId);
+  if (project) {
+    if ($('#att-stat-proj-name')) $('#att-stat-proj-name').textContent = project.name;
+    if ($('#att-stat-proj-loc')) $('#att-stat-proj-loc').textContent = `${project.district}, ${project.state}`;
+    if ($('#att-stat-score')) $('#att-stat-score').textContent = `${project.attendance || 60}%`;
+    if ($('#att-stat-bar')) $('#att-stat-bar').style.width = `${project.attendance || 60}%`;
+  }
+
   try {
-    const pId = projectId || $('#att-proj-select')?.value || state.data?.sites?.[0]?.id;
-    if (!pId) return;
     const res = await api(`/api/attendance/${encodeURIComponent(pId)}`);
     if (!res.ok) throw new Error('Failed to load');
     const data = await res.json();
     const records = data.records || [];
+
+    if ($('#att-stat-count')) $('#att-stat-count').textContent = records.length;
+    if ($('#att-stat-today')) {
+      const today = new Date().toISOString().split('T')[0];
+      const todayRec = records.find(r => r.date === today);
+      if (todayRec) {
+        $('#att-stat-today').innerHTML = `<span style="color:#10b981">✓ Logged (${esc(todayRec.status)})</span>`;
+      } else {
+        $('#att-stat-today').innerHTML = `<span style="color:#f59e0b">⏳ Awaiting submission</span>`;
+      }
+    }
+
+    if (!container) return;
     if (!records.length) {
-      container.innerHTML = `<div class="empty">No attendance records submitted for this project yet. Use the form on the left to submit records.</div>`;
+      container.innerHTML = `<div class="empty">No attendance records submitted for this project yet. Authorized field staff can mark attendance via the NGO Portal.</div>`;
       return;
     }
+
     container.innerHTML = `
       <table class="table">
         <thead>
@@ -996,32 +1015,32 @@ async function loadAttendanceHistory(projectId) {
             <th>STAFF NAME / ID</th>
             <th>TIME</th>
             <th>STATUS</th>
-            <th>LOCATION</th>
+            <th>LOCATION / GPS</th>
+            <th>SUBMITTED BY</th>
           </tr>
         </thead>
         <tbody>
           ${records.map(r => `
             <tr>
               <td><strong>${esc(r.date)}</strong></td>
-              <td>${esc(r.staffName)}<br><small style="color:var(--muted)">${esc(r.staffId)}</small></td>
+              <td>${esc(r.staffName)}<br><small style="color:var(--muted)">${esc(r.staffId || 'N/A')}</small></td>
               <td>${esc(r.checkIn || '-')}${r.checkOut ? ` - ${esc(r.checkOut)}` : ''}</td>
-              <td><span class="badge ${r.status === 'Present' ? 'live' : 'high'}">${esc(r.status)}</span></td>
-              <td>${r.locationCaptured && r.location?.latitude ? `<span title="${r.location.latitude.toFixed(4)}, ${r.location.longitude.toFixed(4)}">📍 GPS (±${r.location.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
+              <td><span class="badge ${r.status === 'Present' ? 'live' : r.status === 'Absent' ? 'high' : 'med'}">${esc(r.status)}</span></td>
+              <td>${r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude) ? `<span title="${(r.geoLocation?.latitude || r.location?.latitude).toFixed(4)}, ${(r.geoLocation?.longitude || r.location?.longitude).toFixed(4)}">📍 GPS (±${r.geoLocation?.accuracy || r.location?.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
+              <td><small>${esc(r.submittedBy || 'NGO Staff')}</small></td>
             </tr>
           `).join('')}
         </tbody>
       </table>
     `;
   } catch(e) {
-    container.innerHTML = `<div class="empty">Could not load attendance records.</div>`;
+    if (container) container.innerHTML = `<div class="empty">Could not load attendance records.</div>`;
   }
 }
 
 function bindAttendance(){
-  const form = $('#attendance-submit-form');
   const projSelect = $('#att-proj-select');
   const refreshBtn = $('#refresh-att-btn');
-  const captureBtn = $('#att-capture-geo');
 
   if (projSelect) {
     projSelect.onchange = () => loadAttendanceHistory(projSelect.value);
@@ -1030,118 +1049,88 @@ function bindAttendance(){
   if (refreshBtn) {
     refreshBtn.onclick = () => loadAttendanceHistory(projSelect ? projSelect.value : null);
   }
-  if (captureBtn) {
-    captureBtn.onclick = async () => {
-      captureBtn.textContent = 'Locating…';
-      const loc = await captureActionGeolocation();
-      if (loc) {
-        $('#att-lat').value = loc.latitude;
-        $('#att-lng').value = loc.longitude;
-        $('#att-acc').value = loc.accuracy;
-        $('#att-geo-status').textContent = `GPS: ${loc.latitude.toFixed(4)}, ${loc.longitude.toFixed(4)} (±${loc.accuracy}m)`;
-        captureBtn.textContent = '✓ GPS Captured';
-      } else {
-        $('#att-geo-status').textContent = 'GPS Unavailable';
-        captureBtn.textContent = 'Retry GPS';
-      }
-    };
-  }
-  if (form) {
-    form.onsubmit = async (e) => {
-      e.preventDefault();
-      const submitBtn = form.querySelector('button[type="submit"]');
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Submitting…';
-      const fd = new FormData(form);
-      const data = Object.fromEntries(fd);
-      const payload = {
-        projectId: data.projectId,
-        date: data.date,
-        staffName: data.staffName,
-        staffId: data.staffId,
-        checkIn: data.checkIn,
-        checkOut: data.checkOut,
-        status: data.status,
-        location: data.lat ? {
-          latitude: parseFloat(data.lat),
-          longitude: parseFloat(data.lng),
-          accuracy: parseFloat(data.acc) || 10
-        } : null
-      };
-      try {
-        const res = await api('/api/attendance', {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-        const resp = await res.json();
-        if (!res.ok) throw new Error(resp.error || 'Failed to submit attendance');
-        showToast(`Attendance recorded! Project attendance score: ${resp.attendance}%`);
-        form.querySelector('input[name="staffName"]').value = '';
-        form.querySelector('input[name="staffId"]').value = '';
-        await loadAttendanceHistory(data.projectId);
-      } catch(err) {
-        showToast(err.message);
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.textContent = 'Submit Attendance Record';
-      }
-    };
-  }
 }
 
-window._activeBroadcasts = window._activeBroadcasts || {};
+window._projectRelayPollers = window._projectRelayPollers || {};
 
-async function startProjectBroadcast(projectId) {
-  const videoEl = $(`#stream-video-${projectId}`);
+function startProjectFramePoller(projectId, roomId) {
+  if (window._projectRelayPollers[projectId]) clearInterval(window._projectRelayPollers[projectId]);
+  const frameImg = $(`#stream-frame-${projectId}`);
   const standbyEl = $(`#stream-standby-${projectId}`);
   const hudEl = $(`#stream-hud-${projectId}`);
   const pillEl = $(`#stream-pill-${projectId}`);
+
+  window._projectRelayPollers[projectId] = setInterval(async () => {
+    try {
+      const res = await api(`/api/mobile-cctv/frame?roomId=${encodeURIComponent(roomId)}&t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) return;
+      const frame = await res.json();
+      if (frame.image) {
+        if (frameImg) {
+          frameImg.src = frame.image;
+          frameImg.style.display = 'block';
+        }
+        if (standbyEl) standbyEl.style.display = 'none';
+        if (hudEl) hudEl.style.display = 'flex';
+        if (pillEl) {
+          pillEl.className = 'stream-pill live';
+          pillEl.textContent = '● LIVE';
+        }
+      }
+    } catch(e) {}
+  }, 500);
+}
+
+async function startProjectBroadcast(projectId) {
   const startBtn = document.querySelector(`.start-broadcast-btn[data-proj-id="${projectId}"]`);
   const stopBtn = document.querySelector(`.stop-broadcast-btn[data-proj-id="${projectId}"]`);
+  const inviteBox = $(`#stream-invite-${projectId}`);
+  const linkInput = $(`#stream-link-input-${projectId}`);
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-    window._activeBroadcasts[projectId] = stream;
+    const res = await api('/api/mobile-cctv/room', {
+      method: 'POST',
+      body: JSON.stringify({ roomId: projectId })
+    });
+    const data = await res.json();
+    const roomId = data.roomId || projectId;
+    const link = `${location.origin}/?mobileCctv=${encodeURIComponent(roomId)}&slot=${encodeURIComponent(projectId)}`;
 
-    if (videoEl) {
-      videoEl.srcObject = stream;
-      videoEl.style.display = 'block';
+    if (linkInput) linkInput.value = link;
+    if (inviteBox) inviteBox.classList.remove('hidden');
+
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast('Field phone broadcast link copied! Open on mobile device.');
+    } catch(e) {
+      showToast('Copy the displayed link and open on field phone.');
     }
-    if (standbyEl) standbyEl.style.display = 'none';
-    if (hudEl) hudEl.style.display = 'flex';
-    if (pillEl) {
-      pillEl.className = 'stream-pill live';
-      pillEl.textContent = '● LIVE';
-    }
+
     if (startBtn) startBtn.classList.add('hidden');
     if (stopBtn) stopBtn.classList.remove('hidden');
 
-    await api(`/api/stream/${encodeURIComponent(projectId)}/start`, { method: 'POST' });
-    if (liveSocket) {
-      liveSocket.emit('stream:start', { projectId });
-    }
-    showToast('Secure camera broadcast started.');
+    startProjectFramePoller(projectId, roomId);
   } catch(err) {
-    showToast('Camera access denied or unavailable: ' + err.message);
+    showToast('Could not generate camera link: ' + err.message);
   }
 }
 
-async function stopProjectBroadcast(projectId) {
-  const stream = window._activeBroadcasts[projectId];
-  if (stream) {
-    stream.getTracks().forEach(t => t.stop());
-    delete window._activeBroadcasts[projectId];
+function stopProjectBroadcast(projectId) {
+  if (window._projectRelayPollers && window._projectRelayPollers[projectId]) {
+    clearInterval(window._projectRelayPollers[projectId]);
+    delete window._projectRelayPollers[projectId];
   }
-  const videoEl = $(`#stream-video-${projectId}`);
+  const frameImg = $(`#stream-frame-${projectId}`);
   const standbyEl = $(`#stream-standby-${projectId}`);
   const hudEl = $(`#stream-hud-${projectId}`);
   const pillEl = $(`#stream-pill-${projectId}`);
   const startBtn = document.querySelector(`.start-broadcast-btn[data-proj-id="${projectId}"]`);
   const stopBtn = document.querySelector(`.stop-broadcast-btn[data-proj-id="${projectId}"]`);
+  const inviteBox = $(`#stream-invite-${projectId}`);
 
-  if (videoEl) {
-    videoEl.srcObject = null;
-    videoEl.style.display = 'none';
+  if (frameImg) {
+    frameImg.src = '';
+    frameImg.style.display = 'none';
   }
   if (standbyEl) standbyEl.style.display = 'flex';
   if (hudEl) hudEl.style.display = 'none';
@@ -1149,45 +1138,41 @@ async function stopProjectBroadcast(projectId) {
     pillEl.className = 'stream-pill offline';
     pillEl.textContent = '○ OFFLINE';
   }
+  if (inviteBox) inviteBox.classList.add('hidden');
   if (startBtn) startBtn.classList.remove('hidden');
   if (stopBtn) stopBtn.classList.add('hidden');
 
-  try {
-    await api(`/api/stream/${encodeURIComponent(projectId)}/stop`, { method: 'POST' });
-    if (liveSocket) {
-      liveSocket.emit('stream:stop', { projectId });
-    }
-    showToast('Broadcast stopped and logged.');
-  } catch(e) {}
+  showToast('Live stream stopped.');
 }
 
 async function watchProjectStream(projectId) {
-  const videoEl = $(`#stream-video-${projectId}`);
+  const frameImg = $(`#stream-frame-${projectId}`);
   const standbyEl = $(`#stream-standby-${projectId}`);
   const hudEl = $(`#stream-hud-${projectId}`);
   const pillEl = $(`#stream-pill-${projectId}`);
 
-  if (window._activeBroadcasts[projectId]) {
-    showToast('You are currently broadcasting this feed.');
-    return;
-  }
-  showToast('Connecting to live camera feed…');
-  if (liveSocket) {
-    liveSocket.emit('stream:join', { projectId });
-  }
   try {
-    const res = await api(`/api/stream/${encodeURIComponent(projectId)}/status`);
+    const res = await api(`/api/mobile-cctv/frame?roomId=${encodeURIComponent(projectId)}&t=${Date.now()}`, { cache: 'no-store' });
     const data = await res.json();
-    if (!data.isStreaming) {
-      showToast('Project camera is currently offline. Waiting for field broadcast.');
-      return;
+    if (data.image) {
+      if (frameImg) {
+        frameImg.src = data.image;
+        frameImg.style.display = 'block';
+      }
+      if (standbyEl) standbyEl.style.display = 'none';
+      if (hudEl) hudEl.style.display = 'flex';
+      if (pillEl) {
+        pillEl.className = 'stream-pill live';
+        pillEl.textContent = '● LIVE';
+      }
+      startProjectFramePoller(projectId, projectId);
+      showToast('Connected to live field camera stream.');
+    } else {
+      showToast('Project camera is offline. Click "Start Broadcast" to generate field phone link.');
     }
-    if (pillEl) {
-      pillEl.className = 'stream-pill live';
-      pillEl.textContent = '● LIVE';
-    }
-    if (standbyEl) standbyEl.innerHTML = `<div style="font-size:24px;margin-bottom:6px">📡</div><div style="font-weight:700">CONNECTING WEBRTC PEER…</div>`;
-  } catch(e) {}
+  } catch(e) {
+    showToast('Unable to reach camera relay.');
+  }
 }
 
 function playTTS(text, btn) {
@@ -1301,7 +1286,7 @@ function initChatbotWidget() {
 
     const typingDiv = document.createElement('div');
     typingDiv.className = 'chat-msg bot typing';
-    typingDiv.innerHTML = `<div class="bubble"><p><em>Analyzing live monitoring database…</em></p></div>`;
+    typingDiv.innerHTML = `<div class="bubble"><div class="typing-dots"><span></span><span></span><span></span></div></div>`;
     msgs.appendChild(typingDiv);
     msgs.scrollTop = msgs.scrollHeight;
 
@@ -1345,7 +1330,7 @@ function render(){
   const user = getCurrentUser();
   const firstName = user?.name ? user.name.split(' ')[0] : 'Arjun';
   const greeting = typeof window.getISTGreeting === 'function' ? window.getISTGreeting(firstName) : `Good morning, ${firstName}`;
-  const titles={overview:greeting,projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',attendance:'Staff Attendance Portal',reports:'Inspection reports',logs:'Real-Time Audit Trail'};
+  const titles={overview:greeting,projects:'Project monitoring',inspections:'Inspections',cctv:'Live CCTV monitoring',attendance:'Official Attendance Oversight',reports:'Inspection reports',logs:'Real-Time Audit Trail'};
   const pt = $('#page-title'); if(pt) pt.textContent=titles[state.view]||'Saarthi Monitoring';
   const ct = $('#content'); if(ct) ct.innerHTML=({overview,projects,inspections,cctv,attendance,reports,logs})[state.view]();
   document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===state.view));
@@ -1534,6 +1519,19 @@ function bind(){
   document.querySelectorAll('.watch-stream-btn').forEach(btn => {
     btn.onclick = () => watchProjectStream(btn.dataset.projId);
   });
+  document.querySelectorAll('.copy-stream-link-btn').forEach(btn => {
+    btn.onclick = async () => {
+      const input = $(`#stream-link-input-${btn.dataset.projId}`);
+      if (input && input.value) {
+        try {
+          await navigator.clipboard.writeText(input.value);
+          showToast('Field phone link copied to clipboard!');
+        } catch(e) {
+          showToast('Copy the link from the input box.');
+        }
+      }
+    };
+  });
 
   const startCamera=$('#start-camera'), stopCamera=$('#stop-camera');
   if(startCamera) startCamera.onclick=startLiveCamera;
@@ -1596,31 +1594,269 @@ const authVerify=(email,code,pending)=>{
   const gs = $('#go-signup'); if(gs) gs.onclick=authSignup;
   const vf = $('#verify-form'); if(vf) vf.onsubmit=async e=>{e.preventDefault();const entered=new FormData(e.target).get('code');const r=await api('/api/auth/verify',{method:'POST',body:JSON.stringify({email,code:entered})}),x=await r.json();if(r.status===404){if(entered!=='123456')return authError('Invalid verification code.');const user={name:pending.name,email,employeeId:pending.employeeId.toUpperCase(),password:pending.password,role:'Department Official'};const users=localAccounts().filter(a=>a.email!==email);users.push(user);localStorage.setItem('saarthiLocalAccounts',JSON.stringify(users));return completeLogin({token:'local-'+crypto.randomUUID(),user})}if(!r.ok)return authError(x.error);completeLogin(x)};
 };
-function completeLogin(x){sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate').remove();if(x.user.role==='Project / NGO Administrator'){showPartnerPortal(x.user);startPartnerEvidenceSync();return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
+function completeLogin(x){sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate')?.remove();if(x.user.role==='Project / NGO Administrator'||x.user.role==='ngo_staff'){showPartnerPortal(x.user);startPartnerEvidenceSync();return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
 function showPartnerAuth(){
   showAuth();
-  $('#auth-form').innerHTML=`<button class="back" id="back-portal">← Back to public portal</button><span class="auth-kicker">REGISTERED ORGANISATION ACCESS</span><h2>Project / NGO portal</h2><p class="auth-muted">Sign in to see your project dashboard, live inspection updates and verified reports.</p><form id="partner-login-form" class="auth-form"><label>DoSJE registration ID or email<input name="identifier" value="NGO/2026/1001" placeholder="NGO/2026/1001 or organisation@email.org" required></label><label>Password<input name="password" type="password" value="Saarthi@2026" placeholder="Enter your password" required></label><button class="auth-primary">Sign in to organisation dashboard</button></form><p class="auth-switch">New organisation? <button id="partner-signup">Register organisation</button></p><div class="demo-note"><b>Default project / NGO account</b><br><b>Registration ID:</b> NGO/2026/1001<br><b>Email:</b> udan@dosje-demo.org<br><b>Password:</b> Saarthi@2026</div>`;
+  $('#auth-form').innerHTML=`<button class="back" id="back-portal">← Back to public portal</button><span class="auth-kicker">REGISTERED ORGANISATION ACCESS</span><h2>Project / NGO portal</h2><p class="auth-muted">Sign in to see your project dashboard, live inspection updates, attendance marking and verified reports.</p><form id="partner-login-form" class="auth-form"><label>DoSJE registration ID or email<input name="identifier" value="NGO/2026/1001" placeholder="NGO/2026/1001 or organisation@email.org" required></label><label>Password<input name="password" type="password" value="Saarthi@2026" placeholder="Enter your password" required></label><button class="auth-primary">Sign in to organisation dashboard</button></form><p class="auth-switch">New organisation? <button id="partner-signup">Register organisation</button></p><div class="demo-note"><b>Project / NGO Admin account:</b><br><b>Registration ID:</b> NGO/2026/1001<br><b>Email:</b> udan@dosje-demo.org<br><b>Password:</b> Saarthi@2026<br><br><b>NGO Staff account:</b><br><b>Email:</b> staff@dosje-demo.org<br><b>Password:</b> Saarthi@2026</div>`;
   $('#partner-login-form').onsubmit=partnerLogin;
   $('#partner-signup').onclick=partnerSignup;
   $('#back-portal').onclick=()=>{$('#auth-gate').remove();showLanding()};
 }
 
+async function partnerLogin(e){
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target));
+  const r = await api('/api/partner/login', { method: 'POST', body: JSON.stringify(data) });
+  const x = await r.json();
+  if (!r.ok) return authError(x.error || 'Login failed.');
+  completeLogin(x);
+}
+
+function partnerSignup(){
+  const af = $('#auth-form'); if (!af) return;
+  af.innerHTML = `
+    <button class="back" id="back-partner-login">← Back to NGO sign in</button>
+    <span class="auth-kicker">ORGANISATION REGISTRATION</span>
+    <h2>Register NGO / Project</h2>
+    <p class="auth-muted">Register your organisation to manage projects and submit daily staff attendance.</p>
+    <form id="partner-reg-form" class="auth-form">
+      <label>Organisation / Project Name<input name="organisation" placeholder="e.g. Udan Welfare Society" required></label>
+      <label>DoSJE Registration ID<input name="registrationId" placeholder="e.g. NGO/2026/1002" required></label>
+      <label>Official Email<input name="email" type="email" placeholder="contact@organisation.org" required></label>
+      <label>Password<input name="password" type="password" placeholder="At least 8 characters" required></label>
+      <button class="auth-primary">Register and verify</button>
+    </form>
+  `;
+  $('#back-partner-login').onclick = showPartnerAuth;
+  $('#partner-reg-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.target));
+    const r = await api('/api/partner/signup', { method: 'POST', body: JSON.stringify(data) });
+    const x = await r.json();
+    if (!r.ok) return authError(x.error || 'Registration failed.');
+    partnerVerify(data.email, x.demoCode, data);
+  };
+}
+
+function partnerVerify(email, code, pending){
+  const af = $('#auth-form'); if (!af) return;
+  af.innerHTML = `
+    <button class="back" id="back-partner-reg">← Edit registration</button>
+    <span class="auth-kicker">EMAIL VERIFICATION</span>
+    <h2>Enter organisation verification code</h2>
+    <p class="auth-muted">A verification code was sent to <b>${esc(email)}</b>.</p>
+    <form id="partner-vform" class="auth-form">
+      <label>Verification code<input name="code" inputmode="numeric" maxlength="6" placeholder="123456" required></label>
+      <button class="auth-primary">Verify and continue</button>
+    </form>
+    <div class="demo-note">Prototype verification code: <b>${code || '123456'}</b>.</div>
+  `;
+  $('#back-partner-reg').onclick = partnerSignup;
+  $('#partner-vform').onsubmit = async (e) => {
+    e.preventDefault();
+    const entered = new FormData(e.target).get('code');
+    const r = await api('/api/partner/verify', { method: 'POST', body: JSON.stringify({ email, code: entered }) });
+    const x = await r.json();
+    if (!r.ok) return authError(x.error || 'Verification failed.');
+    completeLogin(x);
+  };
+}
+
 function showPartnerPortal(user){
   let page=document.querySelector('#partner-portal');
   if(!page){page=document.createElement('div');page.id='partner-portal';document.body.appendChild(page)}
+  const todayStr = new Date().toISOString().split('T')[0];
+  let partnerProjects = [];
+
+  const loadPartnerAttendance = async (pId) => {
+    const tableContainer = $('#partner-att-table-container');
+    const badge = $('#partner-att-score-badge');
+    if (!pId) {
+      if (tableContainer) tableContainer.innerHTML = '<p class="partner-empty">No project selected.</p>';
+      return;
+    }
+    const currentProj = partnerProjects.find(p => p.id === pId);
+    if (badge && currentProj) {
+      badge.textContent = `Project Attendance: ${currentProj.attendance || 60}%`;
+    }
+    try {
+      const res = await api(`/api/attendance/${encodeURIComponent(pId)}`);
+      if (!res.ok) throw new Error('Failed to load');
+      const data = await res.json();
+      const records = data.records || [];
+      if (!tableContainer) return;
+      if (!records.length) {
+        tableContainer.innerHTML = '<p class="partner-empty">No staff attendance recorded yet for this project. Submit the daily form above.</p>';
+        return;
+      }
+      tableContainer.innerHTML = `
+        <table class="table" style="font-size:12px;margin-top:8px">
+          <thead>
+            <tr>
+              <th>DATE</th>
+              <th>STAFF MEMBER / ID</th>
+              <th>CHECK-IN / OUT</th>
+              <th>STATUS</th>
+              <th>GPS VERIFICATION</th>
+              <th>SUBMITTED</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${records.slice(0, 15).map(r => `
+              <tr>
+                <td><strong>${esc(r.date)}</strong></td>
+                <td><b>${esc(r.staffName)}</b><br><small style="color:var(--muted)">${esc(r.staffId || 'N/A')}</small></td>
+                <td>${esc(r.checkIn || '-')}${r.checkOut ? ` - ${esc(r.checkOut)}` : ''}</td>
+                <td><span class="badge ${r.status === 'Present' ? 'live' : r.status === 'Absent' ? 'high' : 'med'}">${esc(r.status)}</span></td>
+                <td>${r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude) ? `<span title="${(r.geoLocation?.latitude || r.location?.latitude).toFixed(4)}, ${(r.geoLocation?.longitude || r.location?.longitude).toFixed(4)}">📍 GPS (±${r.geoLocation?.accuracy || r.location?.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
+                <td><small style="color:var(--muted)">${new Date(r.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</small></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    } catch(e) {
+      if (tableContainer) tableContainer.innerHTML = '<p class="partner-empty">Unable to load attendance records.</p>';
+    }
+  };
+
   const refresh=async()=>{
     const response=await api('/api/partner/dashboard',{cache:'no-store'});
     if(!response.ok||!$('#partner-project-count'))return;
     const data=await response.json();
+    partnerProjects = data.projects || [];
     $('#partner-project-count').textContent=data.stats.projects;
     $('#partner-active-count').textContent=data.stats.activeInspections;
     $('#partner-report-count').textContent=data.stats.reports;
-    $('#partner-project-list').innerHTML=data.projects.length?data.projects.map(project=>`<li><b>${esc(project.name)}</b><span>${esc(project.district)}, ${esc(project.state)} · ${esc(project.scheme)}</span><small>${esc(project.risk)} · ${project.camera==='Live'?'CCTV available':'CCTV not connected'}</small></li>`).join(''):'<li><span>No projects have been registered from this account yet.</span></li>';
+    $('#partner-project-list').innerHTML=data.projects.length?data.projects.map(project=>`<li><b>${esc(project.name)}</b><span>${esc(project.district)}, ${esc(project.state)} · ${esc(project.scheme)}</span><small>${esc(project.risk)} · Attendance: ${project.attendance || 60}% · ${project.camera==='Live'?'CCTV available':'CCTV not connected'}</small></li>`).join(''):'<li><span>No projects have been registered from this account yet.</span></li>';
     $('#partner-inspection-list').innerHTML=data.inspections.length?data.inspections.map(item=>`<li class="partner-event ${String(item.status).toLowerCase().replace(' ','-')}"><b>${item.status==='In progress'?'● On-ground inspection in progress':item.status==='Completed'?'✓ Inspection completed':'Inspection assigned'}</b><span>${esc(item.site)} · ${esc(item.inspector)}</span><small>${esc(item.status==='In progress'?'The inspection team is currently at the project.':item.status==='Completed'?'Verified report is available below.':`Scheduled: ${item.due}`)}</small></li>`).join(''):'<li><span>No inspection activity yet.</span></li>';
     $('#partner-report-list').innerHTML=data.reports.length?data.reports.map(report=>`<article class="partner-report"><div><b>${esc(report.id)}</b><span>${new Date(report.submittedAt).toLocaleString('en-IN')}</span></div><strong>${esc(report.site)}</strong><p><b>Finding:</b> ${esc(report.finding)} · <b>Evidence:</b> ${esc(report.evidence)}</p><p>${esc(report.notes||'No additional notes.')}</p><small>GPS: ${esc(report.location||'Not available')}</small></article>`).join(''):'<p class="partner-empty">Verified reports will appear here after the officer submits them.</p>';
+
+    const attSelect = $('#partner-att-proj-select');
+    if (attSelect && partnerProjects.length) {
+      const prevVal = attSelect.value;
+      attSelect.innerHTML = partnerProjects.map(p => `<option value="${esc(p.id)}" ${p.id === prevVal ? 'selected' : ''}>${esc(p.name)} (${esc(p.scheme)})</option>`).join('');
+      loadPartnerAttendance(attSelect.value || partnerProjects[0].id);
+    }
   };
-  page.innerHTML=`<main class="partner-shell"><header><div><span class="auth-kicker">DOSJE SCHEME ORGANISATION PORTAL</span><h1>${esc(user.name)}</h1><p>Project information, inspection status and officer reports in one secure workspace.</p></div><button class="secondary" id="partner-logout">Log out</button></header><section class="partner-stats"><article><span>Your projects</span><b id="partner-project-count">0</b></article><article><span>On-ground / active inspections</span><b id="partner-active-count">0</b></article><article><span>Officer reports</span><b id="partner-report-count">0</b></article></section><section class="partner-grid"><form id="partner-project-form" class="partner-card"><h2>Add a project / NGO</h2><p class="partner-help">After submission, the project appears on the official dashboard automatically for Department review.</p><label>Project / institute name<input name="name" required></label><label>DoSJE scheme<input name="scheme" placeholder="For example: SMILE" required></label><label>State / UT<select name="state" required><option value="">Select State / UT</option>${indiaStates.map(item=>`<option>${item}</option>`).join('')}</select></label><label>District<input name="district" required></label><div class="partner-coordinates"><span id="partner-location-status">Location optional — capture for a precise map pin.</span><button type="button" class="secondary" id="partner-capture-location">Use my location</button></div><input name="lat" id="partner-lat" type="hidden"><input name="lng" id="partner-lng" type="hidden"><button class="primary">Submit project for review</button><p id="partner-result" class="feedback-result"></p></form><section class="partner-card"><h2>Your projects</h2><ul id="partner-project-list" class="partner-project-list"></ul></section></section><section class="partner-activity"><section class="partner-card"><h2>Inspection updates</h2><p class="partner-help">This refreshes automatically when an officer starts the on-ground inspection.</p><ul id="partner-inspection-list" class="partner-project-list"></ul></section><section class="partner-card"><h2>Verified officer reports</h2><div id="partner-report-list"></div></section></section></main>`;
+
+  page.innerHTML=`<main class="partner-shell">
+    <header>
+      <div>
+        <span class="auth-kicker">DOSJE SCHEME ORGANISATION PORTAL</span>
+        <h1>${esc(user.name)}</h1>
+        <p>Project information, verified worker attendance, inspection status and officer reports in one secure workspace.</p>
+      </div>
+      <button class="secondary" id="partner-logout">Log out</button>
+    </header>
+
+    <section class="partner-stats">
+      <article><span>Your projects</span><b id="partner-project-count">0</b></article>
+      <article><span>On-ground / active inspections</span><b id="partner-active-count">0</b></article>
+      <article><span>Officer reports</span><b id="partner-report-count">0</b></article>
+    </section>
+
+    <!-- Daily Staff & Worker Attendance Section -->
+    <section class="partner-card" id="partner-attendance-card" style="margin-bottom:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:8px">
+        <div>
+          <h2 style="margin:0;font-size:18px;color:var(--deep)">Daily Staff & Worker Attendance</h2>
+          <p class="partner-help" style="margin-top:4px">Submit verified attendance for project field personnel. Future dates are blocked. Score updates automatically.</p>
+        </div>
+        <div id="partner-att-score-badge" style="background:#e0f2fe;color:#0369a1;padding:6px 14px;border-radius:20px;font-weight:700;font-size:12px">
+          Project Attendance: --%
+        </div>
+      </div>
+
+      <form id="partner-attendance-form" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;align-items:end;margin-bottom:18px;background:#f8fafc;padding:16px;border-radius:8px;border:1px solid #e2e8f0">
+        <label style="font-size:12px;font-weight:600">
+          Project / Scheme
+          <select name="projectId" id="partner-att-proj-select" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc">
+          </select>
+        </label>
+        <label style="font-size:12px;font-weight:600">
+          Date (Max: Today)
+          <input type="date" name="date" id="partner-att-date" value="${todayStr}" max="${todayStr}" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+        </label>
+        <label style="font-size:12px;font-weight:600">
+          Staff Member Name
+          <input type="text" name="staffName" placeholder="e.g. Ramesh Kumar" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+        </label>
+        <label style="font-size:12px;font-weight:600">
+          Staff ID / Biometric Code
+          <input type="text" name="staffId" placeholder="e.g. STF-2026-081" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+        </label>
+        <label style="font-size:12px;font-weight:600">
+          Check-in Time
+          <input type="time" name="checkIn" value="09:00" required style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+        </label>
+        <label style="font-size:12px;font-weight:600">
+          Check-out Time
+          <input type="time" name="checkOut" value="17:00" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc" />
+        </label>
+        <label style="font-size:12px;font-weight:600">
+          Attendance Status
+          <select name="status" style="width:100%;margin-top:4px;padding:8px;border-radius:6px;border:1px solid #ccc">
+            <option value="Present">Present</option>
+            <option value="Absent">Absent</option>
+            <option value="On Leave">On Leave</option>
+          </select>
+        </label>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <span style="font-size:11px;color:var(--muted)" id="partner-att-geo-status">GPS Optional</span>
+          <button type="button" class="secondary" id="partner-att-capture-geo" style="font-size:11px;padding:7px 10px">⌖ Capture GPS</button>
+        </div>
+        <input type="hidden" name="lat" id="partner-att-lat" />
+        <input type="hidden" name="lng" id="partner-att-lng" />
+        <input type="hidden" name="acc" id="partner-att-acc" />
+        <div>
+          <button type="submit" class="primary" style="width:100%;padding:9px 12px;font-size:13px;font-weight:700">✓ Mark Attendance</button>
+        </div>
+      </form>
+
+      <div>
+        <h3 style="font-size:14px;margin-bottom:8px;color:var(--deep)">Recent Staff Attendance Submissions</h3>
+        <div id="partner-att-table-container">
+          <div style="padding:12px;text-align:center;color:var(--muted);font-size:12px">Loading recent records…</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="partner-grid">
+      <form id="partner-project-form" class="partner-card">
+        <h2>Add a project / NGO</h2>
+        <p class="partner-help">After submission, the project appears on the official dashboard automatically for Department review.</p>
+        <label>Project / institute name<input name="name" required></label>
+        <label>DoSJE scheme<input name="scheme" placeholder="For example: SMILE" required></label>
+        <label>State / UT<select name="state" required><option value="">Select State / UT</option>${indiaStates.map(item=>`<option>${item}</option>`).join('')}</select></label>
+        <label>District<input name="district" required></label>
+        <div class="partner-coordinates"><span id="partner-location-status">Location optional — capture for a precise map pin.</span><button type="button" class="secondary" id="partner-capture-location">Use my location</button></div>
+        <input name="lat" id="partner-lat" type="hidden">
+        <input name="lng" id="partner-lng" type="hidden">
+        <button class="primary" type="submit">Submit project for review</button>
+        <p id="partner-result" class="feedback-result" aria-live="polite"></p>
+      </form>
+      <section class="partner-card">
+        <h2>Your projects</h2>
+        <ul id="partner-project-list" class="partner-project-list"></ul>
+      </section>
+    </section>
+
+    <section class="partner-activity">
+      <section class="partner-card">
+        <h2>Inspection updates</h2>
+        <p class="partner-help">This refreshes automatically when an officer starts the on-ground inspection.</p>
+        <ul id="partner-inspection-list" class="partner-project-list"></ul>
+      </section>
+      <section class="partner-card">
+        <h2>Verified officer reports</h2>
+        <div id="partner-report-list"></div>
+      </section>
+    </section>
+  </main>`;
+
   $('#partner-logout').onclick=logout;
+
   $('#partner-capture-location').onclick=()=>{
     if(!navigator.geolocation)return showToast('Location is not supported on this device.');
     $('#partner-location-status').textContent='Capturing GPS…';
@@ -1633,6 +1869,74 @@ function showPartnerPortal(user){
       $('#partner-location-status').textContent='GPS not available. You may still submit the project.';
     },{enableHighAccuracy:true,timeout:12000,maximumAge:15000});
   };
+
+  const attSelect = $('#partner-att-proj-select');
+  if (attSelect) {
+    attSelect.onchange = () => loadPartnerAttendance(attSelect.value);
+  }
+
+  const attGeoBtn = $('#partner-att-capture-geo');
+  if (attGeoBtn) {
+    attGeoBtn.onclick = () => {
+      if(!navigator.geolocation) return showToast('Location is not supported on this device.');
+      $('#partner-att-geo-status').textContent = 'Capturing GPS…';
+      navigator.geolocation.getCurrentPosition(pos => {
+        const { latitude, longitude, accuracy } = pos.coords;
+        $('#partner-att-lat').value = latitude;
+        $('#partner-att-lng').value = longitude;
+        $('#partner-att-acc').value = accuracy;
+        $('#partner-att-geo-status').textContent = `✓ GPS: ${latitude.toFixed(4)}, ${longitude.toFixed(4)} (±${Math.round(accuracy)}m)`;
+      }, () => {
+        $('#partner-att-geo-status').textContent = 'GPS Unavailable';
+      }, { enableHighAccuracy: true, timeout: 12000, maximumAge: 15000 });
+    };
+  }
+
+  const attForm = $('#partner-attendance-form');
+  if (attForm) {
+    attForm.onsubmit = async (event) => {
+      event.preventDefault();
+      const submitBtn = attForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting…';
+      const fd = new FormData(attForm);
+      const data = Object.fromEntries(fd);
+      const payload = {
+        projectId: data.projectId,
+        date: data.date,
+        staffName: data.staffName,
+        staffId: data.staffId,
+        checkIn: data.checkIn,
+        checkOut: data.checkOut,
+        status: data.status,
+        geoLocation: data.lat ? {
+          captured: true,
+          latitude: parseFloat(data.lat),
+          longitude: parseFloat(data.lng),
+          accuracy: parseFloat(data.acc) || 10
+        } : null
+      };
+      try {
+        const resp = await api('/api/attendance', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+        const resData = await resp.json();
+        if (!resp.ok) throw new Error(resData.error || 'Failed to submit attendance');
+        showToast(`Attendance recorded! Project attendance score: ${resData.attendance}%`);
+        attForm.querySelector('input[name="staffName"]').value = '';
+        attForm.querySelector('input[name="staffId"]').value = '';
+        await refresh();
+        if (data.projectId) await loadPartnerAttendance(data.projectId);
+      } catch(err) {
+        showToast(err.message);
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '✓ Submit Verified Attendance';
+      }
+    };
+  }
+
   $('#partner-project-form').onsubmit=async event=>{
     event.preventDefault();
     const button=event.currentTarget.querySelector('button.primary');
@@ -1695,47 +1999,7 @@ function showPartnerConfirmation(user,project){
   $('#view-partner-dashboard').onclick=()=>showPartnerPortal(user);
   $('#add-another-project').onclick=()=>{showPartnerPortal(user);setTimeout(()=>$('#partner-project-form')?.scrollIntoView({behavior:'smooth',block:'start'}),0)};
 }
-function showPartnerPortal(user){
-  let page=document.querySelector('#partner-portal');
-  if(!page){page=document.createElement('div');page.id='partner-portal';document.body.appendChild(page)}
-  const refresh=async()=>{
-    const response=await api('/api/partner/dashboard',{cache:'no-store'});
-    if(!response.ok||!$('#partner-project-count'))return;
-    const data=await response.json();
-    $('#partner-project-count').textContent=data.stats.projects;
-    $('#partner-active-count').textContent=data.stats.activeInspections;
-    $('#partner-report-count').textContent=data.stats.reports;
-    $('#partner-project-list').innerHTML=data.projects.length?data.projects.map(project=>`<li><b>${esc(project.name)}</b><span>${esc(project.district)}, ${esc(project.state)} · ${esc(project.scheme)}</span><small>${esc(project.risk)} · ${project.camera==='Live'?'CCTV available':'CCTV not connected'}</small></li>`).join(''):'<li><span>No projects have been registered from this account yet.</span></li>';
-    $('#partner-inspection-list').innerHTML=data.inspections.length?data.inspections.map(item=>`<li class="partner-event ${String(item.status).toLowerCase().replace(' ','-')}"><b>${item.status==='In progress'?'● On-ground inspection in progress':item.status==='Completed'?'✓ Inspection completed':'Inspection assigned'}</b><span>${esc(item.site)} · ${esc(item.inspector)}</span><small>${esc(item.status==='In progress'?'The inspection team is currently at the project.':item.status==='Completed'?'Verified report is available below.':`Scheduled: ${item.due}`)}</small></li>`).join(''):'<li><span>No inspection activity yet.</span></li>';
-    $('#partner-report-list').innerHTML=data.reports.length?data.reports.map(report=>`<article class="partner-report"><div><b>${esc(report.id)}</b><span>${new Date(report.submittedAt).toLocaleString('en-IN')}</span></div><strong>${esc(report.site)}</strong><p><b>Finding:</b> ${esc(report.finding)} · <b>Evidence:</b> ${esc(report.evidence)}</p><p>${esc(report.notes||'No additional notes.')}</p><small>GPS: ${esc(report.location||'Not available')}</small></article>`).join(''):'<p class="partner-empty">Verified reports will appear here after the officer submits them.</p>';
-  };
-  page.innerHTML=`<main class="partner-shell"><header><div><span class="auth-kicker">DOSJE SCHEME ORGANISATION PORTAL</span><h1>${esc(user.name)}</h1><p>Project information, inspection status and officer reports in one secure workspace.</p></div><button class="secondary" id="partner-logout">Log out</button></header><section class="partner-stats"><article><span>Your projects</span><b id="partner-project-count">0</b></article><article><span>On-ground / active inspections</span><b id="partner-active-count">0</b></article><article><span>Officer reports</span><b id="partner-report-count">0</b></article></section><section class="partner-grid"><form id="partner-project-form" class="partner-card"><h2>Add a project / NGO</h2><p class="partner-help">After submission, the project appears on the official dashboard automatically for Department review.</p><label>Project / institute name<input name="name" required></label><label>DoSJE scheme<input name="scheme" placeholder="For example: SMILE" required></label><label>State / UT<select name="state" required><option value="">Select State / UT</option>${indiaStates.map(item=>`<option>${item}</option>`).join('')}</select></label><label>District<input name="district" required></label><div class="partner-coordinates"><span id="partner-location-status">Location optional — capture for a precise map pin.</span><button type="button" class="secondary" id="partner-capture-location">Use my location</button></div><input name="lat" id="partner-lat" type="hidden"><input name="lng" id="partner-lng" type="hidden"><button class="primary" type="submit">Submit project for review</button><p id="partner-result" class="feedback-result" aria-live="polite"></p></form><section class="partner-card"><h2>Your projects</h2><ul id="partner-project-list" class="partner-project-list"></ul></section></section><section class="partner-activity"><section class="partner-card"><h2>Inspection updates</h2><p class="partner-help">This refreshes automatically when an officer starts the on-ground inspection.</p><ul id="partner-inspection-list" class="partner-project-list"></ul></section><section class="partner-card"><h2>Verified officer reports</h2><div id="partner-report-list"></div></section></section></main>`;
-  $('#partner-logout').onclick=logout;
-  $('#partner-capture-location').onclick=()=>{
-    if(!navigator.geolocation)return showToast('Location is not supported on this device.');
-    $('#partner-location-status').textContent='Capturing GPS…';
-    navigator.geolocation.getCurrentPosition(position=>{const {latitude,longitude,accuracy}=position.coords;$('#partner-lat').value=latitude;$('#partner-lng').value=longitude;$('#partner-location-status').textContent=`GPS pinned: ${latitude.toFixed(5)}, ${longitude.toFixed(5)} (±${Math.round(accuracy)}m)`},()=>{$('#partner-location-status').textContent='GPS not available. You may still submit the project.'},{enableHighAccuracy:true,timeout:12000,maximumAge:15000});
-  };
-  $('#partner-project-form').onsubmit=async event=>{
-    event.preventDefault();
-    const form=event.currentTarget,button=form.querySelector('button.primary'),result=$('#partner-result');
-    if(form.dataset.submitting==='true')return;
-    form.dataset.submitting='true';button.disabled=true;button.textContent='Submitting…';
-    try{
-      const response=await api('/api/partner/projects',{method:'POST',body:JSON.stringify(Object.fromEntries(new FormData(form)))});
-      const data=await response.json();
-      if(!response.ok){result.textContent=data.error||'Could not submit the project. Please try again.';result.className='feedback-result error';return}
-      // Redirect only after the API confirms the project was saved.
-      showPartnerConfirmation(user,data.project);
-    }catch{
-      result.textContent='Could not submit the project. Check your connection and try again.';result.className='feedback-result error';
-    }finally{
-      form.dataset.submitting='false';
-      if(document.body.contains(button)){button.disabled=false;button.textContent='Submit project for review'}
-    }
-  };
-  refresh();clearInterval(window.partnerDashboardSync);window.partnerDashboardSync=setInterval(refresh,5000);
-}
+
 async function initInspectionMap(){
   const el=$('#inspection-geo-map');
   if(!el)return;
@@ -1815,4 +2079,23 @@ if (typeof window.startRelativeTimeTicker === 'function') {
   window.startRelativeTimeTicker();
 }
 initChatbotWidget();
-const mobileCctvParams=new URLSearchParams(location.search);if(mobileCctvParams.get('mobileCctv'))showMobileCctvPhone(mobileCctvParams.get('mobileCctv'),mobileCctvParams.get('slot'));else if(sessionStorage.saarthiToken)load();else showLanding();
+const mobileCctvParams = new URLSearchParams(location.search || '');
+if (mobileCctvParams.get('mobileCctv')) {
+  showMobileCctvPhone(mobileCctvParams.get('mobileCctv'), mobileCctvParams.get('slot'));
+} else {
+  let user = null;
+  try { user = JSON.parse(sessionStorage.saarthiUser || '{}'); } catch(e){}
+  const path = String(location.pathname || '');
+  const hash = String(location.hash || '');
+  const isNgo = user?.role === 'ngo_staff' || user?.role === 'Project / NGO Administrator' || path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo';
+  if (sessionStorage.saarthiToken && isNgo) {
+    showPartnerPortal(user || { name: 'NGO Staff', role: 'ngo_staff' });
+    startPartnerEvidenceSync();
+  } else if (sessionStorage.saarthiToken) {
+    load().then(startDashboardSync);
+  } else if (path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo') {
+    showPartnerAuth();
+  } else {
+    showLanding();
+  }
+}

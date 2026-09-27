@@ -31,7 +31,8 @@ const UserSchema = new mongoose.Schema({
     enum: [
       'PMU Inspector',
       'Department Official',
-      'Project / NGO Administrator'
+      'Project / NGO Administrator',
+      'ngo_staff'
     ],
     default: 'PMU Inspector'
   },
