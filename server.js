@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const cors = require('cors');
 const { Server } = require('socket.io');
 
-const { connectDB, isDBConnected, initialSites, defaultChecklistTemplate, initialLogs, initialUsers } = require('./config/db');
+const { connectDB, isDBConnected, initialSites, defaultChecklistTemplate, initialLogs, initialUsers, initialAttendance } = require('./config/db');
 const Project = require('./models/Project');
 const ChecklistItem = require('./models/ChecklistItem');
 const AuditLog = require('./models/AuditLog');
@@ -38,7 +38,7 @@ let memoryInspections = [];
 let memoryAlerts = []; // Real anomaly alerts only
 let memoryReports = [];
 let memoryFeedback = [];
-let memoryAttendance = [];
+let memoryAttendance = JSON.parse(JSON.stringify(initialAttendance || []));
 let memoryNotifications = [];
 const streamStatusMap = new Map();
 let memoryEmployees = JSON.parse(JSON.stringify(initialUsers));
@@ -111,6 +111,50 @@ function computeComplianceScore(checklist) {
     }
   }
   return Math.round((checkedWeight / (totalWeight || 100)) * 100);
+}
+
+// Helper: Compute Rolling 30-Day Attendance Summary & Metrics
+function computeAttendanceSummary(records = [], fallbackAttendance = 0) {
+  const windowRecords = records.slice(0, 30);
+  const totalRecords = windowRecords.length;
+  let presentCount = 0;
+  let absentCount = 0;
+  let leaveCount = 0;
+  let halfDayCount = 0;
+  let lateCount = 0;
+
+  windowRecords.forEach(r => {
+    const st = String(r.status || '').trim().toLowerCase();
+    if (st === 'present') {
+      presentCount++;
+    } else if (st === 'absent') {
+      absentCount++;
+    } else if (st === 'on leave' || st === 'leave') {
+      leaveCount++;
+    } else if (st === 'half-day' || st === 'half day') {
+      halfDayCount++;
+    } else if (st === 'late') {
+      lateCount++;
+    } else {
+      presentCount++;
+    }
+  });
+
+  const totalScoreWeight = (presentCount * 1.0) + ((halfDayCount + lateCount) * 0.5);
+  const attendancePercentage = totalRecords > 0
+    ? Math.round((totalScoreWeight / totalRecords) * 100)
+    : fallbackAttendance;
+
+  return {
+    attendancePercentage,
+    totalRecords,
+    presentCount,
+    absentCount,
+    leaveCount,
+    halfDayCount,
+    lateCount,
+    period: '30d'
+  };
 }
 
 // Helpers
@@ -335,6 +379,16 @@ app.get('/api/dashboard', async (req, res) => {
     time: formatRelativeIST(a.createdAt || new Date())
   }));
 
+  // Synchronize site attendance percentage with real rolling records
+  sites = sites.map(s => {
+    const pRecords = memoryAttendance.filter(r => r.projectId === s.id);
+    if (pRecords.length > 0) {
+      const summary = computeAttendanceSummary(pRecords, s.attendance || 60);
+      return { ...s, attendance: summary.attendancePercentage };
+    }
+    return s;
+  });
+
   return res.json({
     sites,
     inspections: memoryInspections,
@@ -358,6 +412,14 @@ app.get('/api/projects', async (req, res) => {
       if (dbSites && dbSites.length) sites = dbSites;
     } catch (e) { console.warn('[DB Projects Fetch Error]', e.message); }
   }
+  sites = sites.map(s => {
+    const pRecords = memoryAttendance.filter(r => r.projectId === s.id);
+    if (pRecords.length > 0) {
+      const summary = computeAttendanceSummary(pRecords, s.attendance || 60);
+      return { ...s, attendance: summary.attendancePercentage };
+    }
+    return s;
+  });
   return res.json({ sites });
 });
 
@@ -1142,8 +1204,65 @@ app.get('/api/mobile-cctv/frame', (req, res) => {
 });
 
 // ==========================================
-// Attendance Portal Endpoints
+// Attendance Portal Endpoints (Read-Only for Admin/Inspector, NGO Mark)
 // ==========================================
+
+// GET /api/attendance/project/:projectId - full attendance history for one project
+app.get('/api/attendance/project/:projectId', async (req, res) => {
+  const { projectId } = req.params;
+  let records = memoryAttendance.filter(r => r.projectId === projectId);
+  if (isDBConnected()) {
+    try {
+      const dbRecords = await AttendanceRecord.find({ projectId }).sort({ date: -1, createdAt: -1 }).lean();
+      if (dbRecords && dbRecords.length) records = dbRecords;
+    } catch (e) {
+      console.warn('[DB Attendance Project Fetch Error]', e.message);
+    }
+  }
+
+  records.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
+  const project = memorySites.find(s => s.id === projectId);
+  const summary = computeAttendanceSummary(records, project?.attendance || 60);
+
+  return res.json({
+    projectId,
+    projectName: project?.name || '',
+    records,
+    totalCount: records.length,
+    summary
+  });
+});
+
+// GET /api/attendance/project/:projectId/summary - computed attendance % matching project cards
+app.get('/api/attendance/project/:projectId/summary', async (req, res) => {
+  const { projectId } = req.params;
+  let records = memoryAttendance.filter(r => r.projectId === projectId);
+  if (isDBConnected()) {
+    try {
+      const dbRecords = await AttendanceRecord.find({ projectId }).sort({ date: -1, createdAt: -1 }).lean();
+      if (dbRecords && dbRecords.length) records = dbRecords;
+    } catch (e) {
+      console.warn('[DB Attendance Summary Fetch Error]', e.message);
+    }
+  }
+
+  const project = memorySites.find(s => s.id === projectId);
+  const summary = computeAttendanceSummary(records, project?.attendance || 60);
+
+  return res.json({
+    projectId,
+    attendancePercentage: summary.attendancePercentage,
+    totalRecords: summary.totalRecords,
+    presentCount: summary.presentCount,
+    absentCount: summary.absentCount,
+    leaveCount: summary.leaveCount,
+    halfDayCount: summary.halfDayCount,
+    lateCount: summary.lateCount,
+    period: summary.period
+  });
+});
+
+// Legacy backward-compatible endpoint
 app.get('/api/attendance/:projectId', async (req, res) => {
   const { projectId } = req.params;
   let records = memoryAttendance.filter(r => r.projectId === projectId);
@@ -1153,14 +1272,18 @@ app.get('/api/attendance/:projectId', async (req, res) => {
       if (dbRecords && dbRecords.length) records = dbRecords;
     } catch (e) {}
   }
+  records.sort((a, b) => new Date(b.date || b.createdAt) - new Date(a.date || a.createdAt));
   const todayStr = new Date().toISOString().split('T')[0];
   const todayRecord = records.find(r => r.date === todayStr);
+  const project = memorySites.find(s => s.id === projectId);
+  const summary = computeAttendanceSummary(records, project?.attendance || 60);
 
   return res.json({
     projectId,
     todayRecord: todayRecord || null,
     records: records.slice(0, 30),
-    totalCount: records.length
+    totalCount: records.length,
+    summary
   });
 });
 
@@ -1219,16 +1342,11 @@ const handleAttendanceSubmit = async (req, res) => {
 
   memoryAttendance.unshift(record);
 
-  // Compute updated project attendance % from rolling records
+  // Compute updated project attendance % from rolling records using shared formula
   const projectRecords = memoryAttendance.filter(r => r.projectId === projectId);
-  let totalScoreWeight = 0;
-  projectRecords.slice(0, 30).forEach(r => {
-    if (r.status === 'Present') totalScoreWeight += 1;
-    else if (r.status === 'Half-day' || r.status === 'Late') totalScoreWeight += 0.5;
-  });
-  const sampleCount = Math.min(projectRecords.length, 30);
+  const summary = computeAttendanceSummary(projectRecords, project.attendance || 60);
   const oldAttendance = project.attendance || 60;
-  const newAttendance = sampleCount > 0 ? Math.round((totalScoreWeight / sampleCount) * 100) : oldAttendance;
+  const newAttendance = summary.attendancePercentage;
   project.attendance = newAttendance;
 
   // Create real AuditLog entry with actionType: 'attendance_marked'
@@ -1284,6 +1402,22 @@ const handleAttendanceSubmit = async (req, res) => {
 
 app.post('/api/attendance', handleAttendanceSubmit);
 app.put('/api/attendance', handleAttendanceSubmit);
+app.patch('/api/attendance', handleAttendanceSubmit);
+app.delete('/api/attendance', (req, res) => {
+  return res.status(403).json({ error: 'Forbidden: Attendance records cannot be deleted by officials.' });
+});
+app.all('/api/attendance/project/:projectId', (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    return res.status(403).json({ error: 'Forbidden: Attendance write operations are strictly prohibited for officials/inspectors.' });
+  }
+  next();
+});
+app.all('/api/attendance/project/:projectId/summary', (req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) {
+    return res.status(403).json({ error: 'Forbidden: Attendance summary is read-only.' });
+  }
+  next();
+});
 
 // ==========================================
 // Anomaly Alerts & Settings Endpoints

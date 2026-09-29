@@ -286,6 +286,133 @@ function closeProjectDrawer(){
   if(drawerWrap) drawerWrap.classList.add('hidden');
 }
 
+async function loadDrawerAttendance(projectId) {
+  const container = $('#drawer-attendance-content');
+  if (!container) return;
+
+  container.innerHTML = `<div style="padding:24px;text-align:center;color:var(--muted)">Loading verified attendance telemetry…</div>`;
+
+  try {
+    const res = await api(`/api/attendance/project/${encodeURIComponent(projectId)}`);
+    if (!res.ok) throw new Error('Failed to load attendance');
+    const data = await res.json();
+    const records = data.records || [];
+    const summary = data.summary || {
+      attendancePercentage: 0,
+      totalRecords: records.length,
+      presentCount: 0,
+      absentCount: 0,
+      leaveCount: 0,
+      halfDayCount: 0,
+      lateCount: 0
+    };
+
+    container.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <div>
+          <h3 style="font-size:15px;color:var(--deep);margin:0 0 4px">Verified Staff Attendance Telemetry</h3>
+          <p style="font-size:12px;color:var(--muted);margin:0">Official read-only oversight feed. Submissions are strictly verified and geo-tagged by field personnel.</p>
+        </div>
+        <button type="button" class="secondary" id="drawer-refresh-att" style="font-size:11px;padding:5px 10px">↻ Refresh</button>
+      </div>
+
+      <!-- Prominent Summary Numbers -->
+      <div class="drawer-att-summary" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(110px, 1fr));gap:10px;margin-bottom:18px">
+        <div class="card" style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">Rolling Attendance</span>
+          <div style="display:flex;align-items:baseline;gap:6px;margin-top:4px">
+            <b style="font-size:20px;color:#0b3a6e">${summary.attendancePercentage}%</b>
+            <span class="badge ${summary.attendancePercentage >= 75 ? 'live' : summary.attendancePercentage >= 50 ? 'med' : 'high'}">
+              ${summary.attendancePercentage >= 75 ? 'Good' : 'Needs Review'}
+            </span>
+          </div>
+          <div class="progress" style="margin-top:6px;height:5px"><div class="bar" style="width:${summary.attendancePercentage}%"></div></div>
+        </div>
+
+        <div class="card" style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">Total Records</span>
+          <b style="font-size:20px;display:block;margin-top:4px;color:var(--deep)">${summary.totalRecords}</b>
+          <small style="color:var(--muted);font-size:10px">Rolling 30-day window</small>
+        </div>
+
+        <div class="card" style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">Present</span>
+          <b style="font-size:20px;display:block;margin-top:4px;color:#10b981">${summary.presentCount}</b>
+          <small style="color:var(--muted);font-size:10px">Full field presence</small>
+        </div>
+
+        <div class="card" style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">Absent</span>
+          <b style="font-size:20px;display:block;margin-top:4px;color:#ef4444">${summary.absentCount}</b>
+          <small style="color:var(--muted);font-size:10px">Unexcused</small>
+        </div>
+
+        <div class="card" style="padding:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px">
+          <span style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase">Leave / Half-Day</span>
+          <b style="font-size:20px;display:block;margin-top:4px;color:#f59e0b">${summary.leaveCount + summary.halfDayCount + summary.lateCount}</b>
+          <small style="color:var(--muted);font-size:10px">Leave: ${summary.leaveCount} · Half: ${summary.halfDayCount}</small>
+        </div>
+      </div>
+
+      <!-- History Table of Attendance Records (Read-Only) -->
+      ${!records.length ? `
+        <div class="card empty" style="padding:20px;text-align:center">No attendance records submitted for this project yet. Authorized field staff submit attendance via the NGO Portal.</div>
+      ` : `
+        <div style="border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
+          <table class="table" style="margin:0;font-size:12px">
+            <thead>
+              <tr style="background:#f1f5f9">
+                <th>DATE</th>
+                <th>WORKER / STAFF NAME</th>
+                <th>STATUS</th>
+                <th>CHECK-IN</th>
+                <th>CHECK-OUT</th>
+                <th>GPS VERIFICATION</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${records.map(r => {
+                const isPresent = r.status === 'Present';
+                const isAbsent = r.status === 'Absent';
+                const isLeave = r.status === 'On Leave' || r.status === 'Leave';
+                const badgeClass = isPresent ? 'live' : isAbsent ? 'high' : isLeave ? 'info' : 'med';
+                const hasGps = Boolean(r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude));
+                const lat = r.geoLocation?.latitude || r.location?.latitude;
+                const lng = r.geoLocation?.longitude || r.location?.longitude;
+                const acc = r.geoLocation?.accuracy || r.location?.accuracy || 10;
+
+                return `
+                  <tr>
+                    <td><strong>${esc(r.date)}</strong></td>
+                    <td>
+                      <span style="font-weight:600;color:var(--deep)">${esc(r.staffName)}</span>
+                      ${r.staffId ? `<br><small style="color:var(--muted)">${esc(r.staffId)}</small>` : ''}
+                    </td>
+                    <td><span class="badge ${badgeClass}">${esc(r.status)}</span></td>
+                    <td>${esc(r.checkIn || '-')}</td>
+                    <td>${esc(r.checkOut || '-')}</td>
+                    <td>
+                      ${hasGps
+                        ? `<span class="badge info" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0" title="Coordinates: ${lat.toFixed(4)}, ${lng.toFixed(4)}">📍 GPS (±${acc}m)</span>`
+                        : `<small style="color:var(--muted)">Not captured</small>`
+                      }
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `}
+    `;
+
+    const refBtn = $('#drawer-refresh-att');
+    if (refBtn) refBtn.onclick = () => loadDrawerAttendance(projectId);
+  } catch (e) {
+    container.innerHTML = `<div class="card empty" style="color:var(--accent);padding:20px;text-align:center">Unable to load attendance telemetry: ${esc(e.message)}</div>`;
+  }
+}
+
 function renderDrawerContent(project){
   const statusVal = project.status || (project.camera === 'Offline' ? 'Closed' : 'Live');
   const updatedText = formatRelativeOrDate(project.lastUpdated);
@@ -347,20 +474,31 @@ function renderDrawerContent(project){
         </div>
         <div class="score-row" style="margin-bottom:0">
           <span class="score-updated" id="drawer-last-updated">Last updated: <span data-timestamp="${esc(project.lastUpdated)}">${updatedText}</span></span>
-          <small style="color:var(--muted);font-weight:600">Attendance: ${project.attendance}%</small>
+          <span class="badge live" id="drawer-header-att-badge" style="cursor:pointer" title="Click to view Attendance Telemetry">Attendance: ${project.attendance}%</span>
         </div>
+      </div>
+      <div class="drawer-nav-tabs" style="display:flex;gap:6px;margin-top:14px;background:#f1f5f9;padding:4px;border-radius:8px">
+        <button type="button" class="drawer-tab-btn active" id="drawer-tab-checklist" style="flex:1;padding:8px 12px;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:#0b3a6e;box-shadow:0 1px 3px rgba(0,0,0,0.1)">📋 Checklist & Scoring</button>
+        <button type="button" class="drawer-tab-btn" id="drawer-tab-attendance" style="flex:1;padding:8px 12px;border:none;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;background:transparent;color:#64748b">👥 Attendance Telemetry</button>
       </div>
     </div>
     <div class="drawer-body">
-      <div style="margin-bottom:14px">
-        <h3 style="font-size:15px;color:var(--deep);margin-bottom:4px">Compliance Inspection Checklist</h3>
-        <p style="font-size:12px;color:var(--muted);margin:0">Ticking any item automatically recalculates the compliance score and logs the change in real time.</p>
+      <div id="drawer-pane-checklist">
+        <div style="margin-bottom:14px">
+          <h3 style="font-size:15px;color:var(--deep);margin-bottom:4px">Compliance Inspection Checklist</h3>
+          <p style="font-size:12px;color:var(--muted);margin:0">Ticking any item automatically recalculates the compliance score and logs the change in real time.</p>
+        </div>
+        ${checklistHtml}
+        <div class="drawer-notes">
+          <h4>Inspector Field Observations & Notes</h4>
+          <textarea id="drawer-note-text" placeholder="Add verified field observation or corrective action note for this project…"></textarea>
+          <button class="secondary" id="save-drawer-note" style="font-size:12px;padding:8px 14px">+ Add Inspector Note to Audit Log</button>
+        </div>
       </div>
-      ${checklistHtml}
-      <div class="drawer-notes">
-        <h4>Inspector Field Observations & Notes</h4>
-        <textarea id="drawer-note-text" placeholder="Add verified field observation or corrective action note for this project…"></textarea>
-        <button class="secondary" id="save-drawer-note" style="font-size:12px;padding:8px 14px">+ Add Inspector Note to Audit Log</button>
+      <div id="drawer-pane-attendance" style="display:none">
+        <div id="drawer-attendance-content">
+          <div style="padding:24px;text-align:center;color:var(--muted)">Loading attendance telemetry…</div>
+        </div>
       </div>
     </div>
     <div class="drawer-footer">
@@ -371,6 +509,52 @@ function renderDrawerContent(project){
   $('#close-drawer').onclick = closeProjectDrawer;
   const doneBtn = $('#drawer-done-btn');
   if(doneBtn) doneBtn.onclick = closeProjectDrawer;
+
+  const tabChecklist = $('#drawer-tab-checklist');
+  const tabAttendance = $('#drawer-tab-attendance');
+  const paneChecklist = $('#drawer-pane-checklist');
+  const paneAttendance = $('#drawer-pane-attendance');
+  const headerAttBadge = $('#drawer-header-att-badge');
+
+  function switchDrawerTab(tab) {
+    window._activeDrawerTab = tab;
+    if (tab === 'attendance') {
+      if (tabAttendance) {
+        tabAttendance.style.background = '#fff';
+        tabAttendance.style.color = '#0b3a6e';
+        tabAttendance.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      }
+      if (tabChecklist) {
+        tabChecklist.style.background = 'transparent';
+        tabChecklist.style.color = '#64748b';
+        tabChecklist.style.boxShadow = 'none';
+      }
+      if (paneChecklist) paneChecklist.style.display = 'none';
+      if (paneAttendance) paneAttendance.style.display = 'block';
+      loadDrawerAttendance(project.id);
+    } else {
+      if (tabChecklist) {
+        tabChecklist.style.background = '#fff';
+        tabChecklist.style.color = '#0b3a6e';
+        tabChecklist.style.boxShadow = '0 1px 3px rgba(0,0,0,0.1)';
+      }
+      if (tabAttendance) {
+        tabAttendance.style.background = 'transparent';
+        tabAttendance.style.color = '#64748b';
+        tabAttendance.style.boxShadow = 'none';
+      }
+      if (paneChecklist) paneChecklist.style.display = 'block';
+      if (paneAttendance) paneAttendance.style.display = 'none';
+    }
+  }
+
+  if (tabChecklist) tabChecklist.onclick = () => switchDrawerTab('checklist');
+  if (tabAttendance) tabAttendance.onclick = () => switchDrawerTab('attendance');
+  if (headerAttBadge) headerAttBadge.onclick = () => switchDrawerTab('attendance');
+
+  if (window._activeDrawerTab === 'attendance') {
+    switchDrawerTab('attendance');
+  }
 
   document.querySelectorAll('#drawer-content .chk-input').forEach(chk=>{
     chk.onchange = (e) => handleChecklistToggle(project, e.target);
@@ -916,11 +1100,20 @@ function attendance(){
         <h2 style="font-size:20px;margin-bottom:4px">Official Attendance Oversight</h2>
         <p style="font-size:12px;color:var(--muted);margin:0">Real-time attendance telemetry submitted by authorized NGO field staff. Immutable logs and compliance scoring.</p>
       </div>
-      <div style="display:flex;gap:10px;align-items:center">
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <label style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px">
           Select Project:
           <select id="att-proj-select" style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e1;font-size:12px;font-weight:600;background:#fff">
             ${sitesList.map(s => `<option value="${esc(s.id)}">${esc(s.name)} (${esc(s.district)}, ${esc(s.state)})</option>`).join('')}
+          </select>
+        </label>
+        <label style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px">
+          Date Window:
+          <select id="att-date-filter" style="padding:6px 12px;border-radius:6px;border:1px solid #cbd5e1;font-size:12px;font-weight:600;background:#fff">
+            <option value="30">Last 30 Days (Rolling)</option>
+            <option value="14">Last 14 Days</option>
+            <option value="7">Last 7 Days</option>
+            <option value="0">All Time</option>
           </select>
         </label>
         <button class="secondary" id="refresh-att-btn" style="font-size:11px;padding:6px 12px">↻ Refresh Telemetry</button>
@@ -934,7 +1127,7 @@ function attendance(){
       </div>
     </div>
 
-    <div class="stats-grid" id="att-stats-overview" style="margin-bottom:20px;display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:16px">
+    <div class="stats-grid" id="att-stats-overview" style="margin-bottom:20px;display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:14px">
       <div class="card" style="padding:16px">
         <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Project</span>
         <b style="font-size:15px;display:block;margin-top:4px" id="att-stat-proj-name">${esc(sitesList[0]?.name || '-')}</b>
@@ -951,7 +1144,16 @@ function attendance(){
       <div class="card" style="padding:16px">
         <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Logged Entries</span>
         <b style="font-size:22px;display:block;margin-top:4px;color:var(--deep)" id="att-stat-count">--</b>
-        <small style="color:var(--muted)">Verified records in database</small>
+        <small style="color:var(--muted)">Verified records in window</small>
+      </div>
+      <div class="card" style="padding:16px">
+        <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Breakdown (P / A / L)</span>
+        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap">
+          <span class="badge live" id="att-stat-present" title="Present">P: --</span>
+          <span class="badge high" id="att-stat-absent" title="Absent">A: --</span>
+          <span class="badge med" id="att-stat-leave" title="On Leave / Half-day">L: --</span>
+        </div>
+        <small style="color:var(--muted);display:block;margin-top:4px">Field presence ratio</small>
       </div>
       <div class="card" style="padding:16px">
         <span style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase">Today's Status</span>
@@ -962,7 +1164,7 @@ function attendance(){
 
     <div class="card" style="padding:20px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
-        <h3 style="margin:0;font-size:16px;color:var(--deep)">Verified Staff Attendance Telemetry</h3>
+        <h3 style="margin:0;font-size:16px;color:var(--deep)">Verified Staff Attendance Telemetry (Read-Only)</h3>
       </div>
       <div id="attendance-history-table">
         <div style="padding:20px;text-align:center;color:var(--muted)">Loading attendance telemetry…</div>
@@ -976,6 +1178,7 @@ async function loadAttendanceHistory(projectId) {
   const pId = projectId || $('#att-proj-select')?.value || state.data?.sites?.[0]?.id;
   if (!pId) return;
 
+  const daysFilter = parseInt($('#att-date-filter')?.value || '30', 10);
   const project = (state.data?.sites || []).find(s => s.id === pId);
   if (project) {
     if ($('#att-stat-proj-name')) $('#att-stat-proj-name').textContent = project.name;
@@ -985,12 +1188,33 @@ async function loadAttendanceHistory(projectId) {
   }
 
   try {
-    const res = await api(`/api/attendance/${encodeURIComponent(pId)}`);
+    const res = await api(`/api/attendance/project/${encodeURIComponent(pId)}`);
     if (!res.ok) throw new Error('Failed to load');
     const data = await res.json();
-    const records = data.records || [];
+    let records = data.records || [];
+    const summary = data.summary || {
+      attendancePercentage: project?.attendance || 60,
+      totalRecords: records.length,
+      presentCount: 0,
+      absentCount: 0,
+      leaveCount: 0,
+      halfDayCount: 0,
+      lateCount: 0
+    };
+
+    // Filter by days window if specified
+    if (daysFilter > 0) {
+      const cutoff = Date.now() - (daysFilter * 86400000);
+      records = records.filter(r => new Date(r.date + 'T23:59:59Z').getTime() >= cutoff);
+    }
 
     if ($('#att-stat-count')) $('#att-stat-count').textContent = records.length;
+    if ($('#att-stat-present')) $('#att-stat-present').textContent = `P: ${summary.presentCount}`;
+    if ($('#att-stat-absent')) $('#att-stat-absent').textContent = `A: ${summary.absentCount}`;
+    if ($('#att-stat-leave')) $('#att-stat-leave').textContent = `L: ${summary.leaveCount + summary.halfDayCount + summary.lateCount}`;
+    if ($('#att-stat-score')) $('#att-stat-score').textContent = `${summary.attendancePercentage}%`;
+    if ($('#att-stat-bar')) $('#att-stat-bar').style.width = `${summary.attendancePercentage}%`;
+
     if ($('#att-stat-today')) {
       const today = new Date().toISOString().split('T')[0];
       const todayRec = records.find(r => r.date === today);
@@ -1003,7 +1227,7 @@ async function loadAttendanceHistory(projectId) {
 
     if (!container) return;
     if (!records.length) {
-      container.innerHTML = `<div class="empty">No attendance records submitted for this project yet. Authorized field staff can mark attendance via the NGO Portal.</div>`;
+      container.innerHTML = `<div class="empty">No attendance records submitted for this project in the selected period. Authorized field staff can mark attendance via the NGO Portal.</div>`;
       return;
     }
 
@@ -1013,23 +1237,39 @@ async function loadAttendanceHistory(projectId) {
           <tr>
             <th>DATE</th>
             <th>STAFF NAME / ID</th>
-            <th>TIME</th>
             <th>STATUS</th>
+            <th>CHECK-IN</th>
+            <th>CHECK-OUT</th>
             <th>LOCATION / GPS</th>
             <th>SUBMITTED BY</th>
           </tr>
         </thead>
         <tbody>
-          ${records.map(r => `
-            <tr>
-              <td><strong>${esc(r.date)}</strong></td>
-              <td>${esc(r.staffName)}<br><small style="color:var(--muted)">${esc(r.staffId || 'N/A')}</small></td>
-              <td>${esc(r.checkIn || '-')}${r.checkOut ? ` - ${esc(r.checkOut)}` : ''}</td>
-              <td><span class="badge ${r.status === 'Present' ? 'live' : r.status === 'Absent' ? 'high' : 'med'}">${esc(r.status)}</span></td>
-              <td>${r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude) ? `<span title="${(r.geoLocation?.latitude || r.location?.latitude).toFixed(4)}, ${(r.geoLocation?.longitude || r.location?.longitude).toFixed(4)}">📍 GPS (±${r.geoLocation?.accuracy || r.location?.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
-              <td><small>${esc(r.submittedBy || 'NGO Staff')}</small></td>
-            </tr>
-          `).join('')}
+          ${records.map(r => {
+            const isPresent = r.status === 'Present';
+            const isAbsent = r.status === 'Absent';
+            const isLeave = r.status === 'On Leave' || r.status === 'Leave';
+            const badgeClass = isPresent ? 'live' : isAbsent ? 'high' : isLeave ? 'info' : 'med';
+            const hasGps = Boolean(r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude));
+            const lat = r.geoLocation?.latitude || r.location?.latitude;
+            const lng = r.geoLocation?.longitude || r.location?.longitude;
+            const acc = r.geoLocation?.accuracy || r.location?.accuracy || 10;
+
+            return `
+              <tr>
+                <td><strong>${esc(r.date)}</strong></td>
+                <td>
+                  <span style="font-weight:600;color:var(--deep)">${esc(r.staffName)}</span>
+                  ${r.staffId ? `<br><small style="color:var(--muted)">${esc(r.staffId)}</small>` : ''}
+                </td>
+                <td><span class="badge ${badgeClass}">${esc(r.status)}</span></td>
+                <td>${esc(r.checkIn || '-')}</td>
+                <td>${esc(r.checkOut || '-')}</td>
+                <td>${hasGps ? `<span title="${lat.toFixed(4)}, ${lng.toFixed(4)}">📍 GPS (±${acc}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
+                <td><small>${esc(r.submittedBy || 'NGO Staff')}</small></td>
+              </tr>
+            `;
+          }).join('')}
         </tbody>
       </table>
     `;
@@ -1040,11 +1280,15 @@ async function loadAttendanceHistory(projectId) {
 
 function bindAttendance(){
   const projSelect = $('#att-proj-select');
+  const dateFilter = $('#att-date-filter');
   const refreshBtn = $('#refresh-att-btn');
 
   if (projSelect) {
     projSelect.onchange = () => loadAttendanceHistory(projSelect.value);
     loadAttendanceHistory(projSelect.value);
+  }
+  if (dateFilter) {
+    dateFilter.onchange = () => loadAttendanceHistory(projSelect ? projSelect.value : null);
   }
   if (refreshBtn) {
     refreshBtn.onclick = () => loadAttendanceHistory(projSelect ? projSelect.value : null);

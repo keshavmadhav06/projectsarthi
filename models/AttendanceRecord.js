@@ -39,7 +39,7 @@ const AttendanceRecordSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Present', 'Half-day', 'Late', 'Absent'],
+    enum: ['Present', 'Half-day', 'Late', 'Absent', 'On Leave'],
     default: 'Present'
   },
   geoLocation: {
