@@ -119,6 +119,15 @@
     }
   }
 
+  function getTodayISTString(dateInput = new Date()) {
+    const parts = getISTParts(dateInput);
+    if (!parts) return new Date().toISOString().split('T')[0];
+    const y = parts.year;
+    const m = String(parts.month).padStart(2, '0');
+    const d = String(parts.day).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
   // Periodic ticker to refresh all timestamp attributes in real time
   function startRelativeTimeTicker(tickCallback) {
     if (window._istRelativeTicker) clearInterval(window._istRelativeTicker);
@@ -136,5 +145,6 @@
   root.formatRelativeIST = formatRelativeIST;
   root.getISTGreeting = getISTGreeting;
   root.formatDashboardDateIST = formatDashboardDateIST;
+  root.getTodayISTString = getTodayISTString;
   root.startRelativeTimeTicker = startRelativeTimeTicker;
 })(typeof window !== 'undefined' ? window : global);

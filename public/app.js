@@ -1613,9 +1613,14 @@ async function logout(){
   try{
     await api('/api/auth/logout',{method:'POST',body:'{}'});
   }catch{}
+  if (window.partnerDashboardSync) { clearInterval(window.partnerDashboardSync); window.partnerDashboardSync = null; }
+  if (window.partnerEvidenceSync) { clearInterval(window.partnerEvidenceSync); window.partnerEvidenceSync = null; }
   delete sessionStorage.saarthiToken;
   delete sessionStorage.saarthiUser;
   $('#profile-menu')?.remove();
+  $('#partner-portal')?.remove();
+  $('#auth-gate')?.remove();
+  if (location.hash === '#ngo') history.replaceState(null, '', location.pathname);
   showLanding();
   showToast('You have been logged out securely.');
 }
@@ -1838,7 +1843,7 @@ const authVerify=(email,code,pending)=>{
   const gs = $('#go-signup'); if(gs) gs.onclick=authSignup;
   const vf = $('#verify-form'); if(vf) vf.onsubmit=async e=>{e.preventDefault();const entered=new FormData(e.target).get('code');const r=await api('/api/auth/verify',{method:'POST',body:JSON.stringify({email,code:entered})}),x=await r.json();if(r.status===404){if(entered!=='123456')return authError('Invalid verification code.');const user={name:pending.name,email,employeeId:pending.employeeId.toUpperCase(),password:pending.password,role:'Department Official'};const users=localAccounts().filter(a=>a.email!==email);users.push(user);localStorage.setItem('saarthiLocalAccounts',JSON.stringify(users));return completeLogin({token:'local-'+crypto.randomUUID(),user})}if(!r.ok)return authError(x.error);completeLogin(x)};
 };
-function completeLogin(x){sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate')?.remove();if(x.user.role==='Project / NGO Administrator'||x.user.role==='ngo_staff'){showPartnerPortal(x.user);startPartnerEvidenceSync();return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
+function completeLogin(x){sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate')?.remove();if(x.user.role==='Project / NGO Administrator'||x.user.role==='ngo_staff'){showPartnerPortal(x.user);return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
 function showPartnerAuth(){
   showAuth();
   $('#auth-form').innerHTML=`<button class="back" id="back-portal">← Back to public portal</button><span class="auth-kicker">REGISTERED ORGANISATION ACCESS</span><h2>Project / NGO portal</h2><p class="auth-muted">Sign in to see your project dashboard, live inspection updates, attendance marking and verified reports.</p><form id="partner-login-form" class="auth-form"><label>DoSJE registration ID or email<input name="identifier" value="NGO/2026/1001" placeholder="NGO/2026/1001 or organisation@email.org" required></label><label>Password<input name="password" type="password" value="Saarthi@2026" placeholder="Enter your password" required></label><button class="auth-primary">Sign in to organisation dashboard</button></form><p class="auth-switch">New organisation? <button id="partner-signup">Register organisation</button></p><div class="demo-note"><b>Project / NGO Admin account:</b><br><b>Registration ID:</b> NGO/2026/1001<br><b>Email:</b> udan@dosje-demo.org<br><b>Password:</b> Saarthi@2026<br><br><b>NGO Staff account:</b><br><b>Email:</b> staff@dosje-demo.org<br><b>Password:</b> Saarthi@2026</div>`;
@@ -1905,11 +1910,20 @@ function partnerVerify(email, code, pending){
     completeLogin(x);
   };
 }
+const indiaStates = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka',
+  'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur', 'Meghalaya', 'Mizoram',
+  'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim', 'Tamil Nadu',
+  'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+  'Andaman and Nicobar Islands', 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu',
+  'Delhi', 'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry'
+];
 
 function showPartnerPortal(user){
   let page=document.querySelector('#partner-portal');
   if(!page){page=document.createElement('div');page.id='partner-portal';document.body.appendChild(page)}
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = typeof window.getTodayISTString === 'function' ? window.getTodayISTString() : new Date().toISOString().split('T')[0];
   let partnerProjects = [];
 
   const loadPartnerAttendance = async (pId) => {
@@ -1934,53 +1948,106 @@ function showPartnerPortal(user){
         return;
       }
       tableContainer.innerHTML = `
-        <table class="table" style="font-size:12px;margin-top:8px">
-          <thead>
-            <tr>
-              <th>DATE</th>
-              <th>STAFF MEMBER / ID</th>
-              <th>CHECK-IN / OUT</th>
-              <th>STATUS</th>
-              <th>GPS VERIFICATION</th>
-              <th>SUBMITTED</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${records.slice(0, 15).map(r => `
+        <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;width:100%">
+          <table class="table" style="font-size:12px;margin-top:8px;min-width:620px">
+            <thead>
               <tr>
-                <td><strong>${esc(r.date)}</strong></td>
-                <td><b>${esc(r.staffName)}</b><br><small style="color:var(--muted)">${esc(r.staffId || 'N/A')}</small></td>
-                <td>${esc(r.checkIn || '-')}${r.checkOut ? ` - ${esc(r.checkOut)}` : ''}</td>
-                <td><span class="badge ${r.status === 'Present' ? 'live' : r.status === 'Absent' ? 'high' : 'med'}">${esc(r.status)}</span></td>
-                <td>${r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude) ? `<span title="${(r.geoLocation?.latitude || r.location?.latitude).toFixed(4)}, ${(r.geoLocation?.longitude || r.location?.longitude).toFixed(4)}">📍 GPS (±${r.geoLocation?.accuracy || r.location?.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
-                <td><small style="color:var(--muted)">${new Date(r.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</small></td>
+                <th>DATE</th>
+                <th>STAFF MEMBER / ID</th>
+                <th>CHECK-IN / OUT</th>
+                <th>STATUS</th>
+                <th>GPS VERIFICATION</th>
+                <th>SUBMITTED</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              ${records.slice(0, 15).map(r => `
+                <tr>
+                  <td><strong>${esc(r.date)}</strong></td>
+                  <td><b>${esc(r.staffName)}</b><br><small style="color:var(--muted)">${esc(r.staffId || 'N/A')}</small></td>
+                  <td>${esc(r.checkIn || '-')}${r.checkOut ? ` - ${esc(r.checkOut)}` : ''}</td>
+                  <td><span class="badge ${r.status === 'Present' ? 'live' : r.status === 'Absent' ? 'high' : 'med'}">${esc(r.status)}</span></td>
+                  <td>${r.geoLocation?.latitude || (r.locationCaptured && r.location?.latitude) ? `<span title="${(r.geoLocation?.latitude || r.location?.latitude).toFixed(4)}, ${(r.geoLocation?.longitude || r.location?.longitude).toFixed(4)}">📍 GPS (±${r.geoLocation?.accuracy || r.location?.accuracy || 10}m)</span>` : '<small style="color:var(--muted)">Not captured</small>'}</td>
+                  <td><small style="color:var(--muted)">${new Date(r.createdAt || Date.now()).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</small></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
       `;
     } catch(e) {
-      if (tableContainer) tableContainer.innerHTML = '<p class="partner-empty">Unable to load attendance records.</p>';
+      if (tableContainer) {
+        tableContainer.innerHTML = `
+          <div style="padding:16px;text-align:center;color:var(--muted);font-size:12px">
+            <p style="margin-bottom:8px">Unable to load attendance records.</p>
+            <button type="button" class="secondary" id="retry-partner-att" style="font-size:11px;padding:6px 12px">↻ Retry</button>
+          </div>
+        `;
+        const retryBtn = $('#retry-partner-att');
+        if (retryBtn) retryBtn.onclick = () => loadPartnerAttendance(pId);
+      }
     }
   };
 
   const refresh=async()=>{
-    const response=await api('/api/partner/dashboard',{cache:'no-store'});
-    if(!response.ok||!$('#partner-project-count'))return;
-    const data=await response.json();
-    partnerProjects = data.projects || [];
-    $('#partner-project-count').textContent=data.stats.projects;
-    $('#partner-active-count').textContent=data.stats.activeInspections;
-    $('#partner-report-count').textContent=data.stats.reports;
-    $('#partner-project-list').innerHTML=data.projects.length?data.projects.map(project=>`<li><b>${esc(project.name)}</b><span>${esc(project.district)}, ${esc(project.state)} · ${esc(project.scheme)}</span><small>${esc(project.risk)} · Attendance: ${project.attendance || 60}% · ${project.camera==='Live'?'CCTV available':'CCTV not connected'}</small></li>`).join(''):'<li><span>No projects have been registered from this account yet.</span></li>';
-    $('#partner-inspection-list').innerHTML=data.inspections.length?data.inspections.map(item=>`<li class="partner-event ${String(item.status).toLowerCase().replace(' ','-')}"><b>${item.status==='In progress'?'● On-ground inspection in progress':item.status==='Completed'?'✓ Inspection completed':'Inspection assigned'}</b><span>${esc(item.site)} · ${esc(item.inspector)}</span><small>${esc(item.status==='In progress'?'The inspection team is currently at the project.':item.status==='Completed'?'Verified report is available below.':`Scheduled: ${item.due}`)}</small></li>`).join(''):'<li><span>No inspection activity yet.</span></li>';
-    $('#partner-report-list').innerHTML=data.reports.length?data.reports.map(report=>`<article class="partner-report"><div><b>${esc(report.id)}</b><span>${new Date(report.submittedAt).toLocaleString('en-IN')}</span></div><strong>${esc(report.site)}</strong><p><b>Finding:</b> ${esc(report.finding)} · <b>Evidence:</b> ${esc(report.evidence)}</p><p>${esc(report.notes||'No additional notes.')}</p><small>GPS: ${esc(report.location||'Not available')}</small></article>`).join(''):'<p class="partner-empty">Verified reports will appear here after the officer submits them.</p>';
+    try {
+      const response=await api('/api/partner/dashboard',{cache:'no-store'});
+      if (response.status === 401 || response.status === 403) {
+        clearInterval(window.partnerDashboardSync);
+        window.partnerDashboardSync = null;
+        if (window.partnerEvidenceSync) { clearInterval(window.partnerEvidenceSync); window.partnerEvidenceSync = null; }
+        delete sessionStorage.saarthiToken;
+        delete sessionStorage.saarthiUser;
+        $('#partner-portal')?.remove();
+        showPartnerAuth();
+        showToast('Your session has expired. Please sign in again.');
+        return;
+      }
+      if(!response.ok||!$('#partner-project-count'))return;
+      const data=await response.json();
+      partnerProjects = data.projects || [];
+      $('#partner-project-count').textContent=data.stats.projects;
+      $('#partner-active-count').textContent=data.stats.activeInspections;
+      $('#partner-report-count').textContent=data.stats.reports;
+      $('#partner-project-list').innerHTML=data.projects.length?data.projects.map(project=>`<li><b>${esc(project.name)}</b><span>${esc(project.district)}, ${esc(project.state)} · ${esc(project.scheme)}</span><small>${esc(project.risk)} · Attendance: ${project.attendance || 60}% · ${project.camera==='Live'?'CCTV available':'CCTV not connected'}</small></li>`).join(''):'<li><span>No projects have been registered from this account yet.</span></li>';
+      $('#partner-inspection-list').innerHTML=data.inspections.length?data.inspections.map(item=>`<li class="partner-event ${String(item.status).toLowerCase().replace(' ','-')}"><b>${item.status==='In progress'?'● On-ground inspection in progress':item.status==='Completed'?'✓ Inspection completed':'Inspection assigned'}</b><span>${esc(item.site)} · ${esc(item.inspector)}</span><small>${esc(item.status==='In progress'?'The inspection team is currently at the project.':item.status==='Completed'?'Verified report is available below.':`Scheduled: ${item.due}`)}</small></li>`).join(''):'<li><span>No inspection activity yet.</span></li>';
+      $('#partner-report-list').innerHTML=data.reports.length?data.reports.map(report=>`<article class="partner-report"><div><b>${esc(report.id)}</b><span>${new Date(report.submittedAt).toLocaleString('en-IN')}</span></div><strong>${esc(report.site)}</strong><p><b>Finding:</b> ${esc(report.finding)} · <b>Evidence:</b> ${esc(report.evidence)}</p><p>${esc(report.notes||'No additional notes.')}</p><small>GPS: ${esc(report.location||'Not available')}</small></article>`).join(''):'<p class="partner-empty">Verified reports will appear here after the officer submits them.</p>';
 
-    const attSelect = $('#partner-att-proj-select');
-    if (attSelect && partnerProjects.length) {
-      const prevVal = attSelect.value;
-      attSelect.innerHTML = partnerProjects.map(p => `<option value="${esc(p.id)}" ${p.id === prevVal ? 'selected' : ''}>${esc(p.name)} (${esc(p.scheme)})</option>`).join('');
-      loadPartnerAttendance(attSelect.value || partnerProjects[0].id);
+      // Update feedback / grievances directly to avoid redundant duplicate polling
+      const host=$('.partner-activity');
+      if(host){
+        let card=$('#partner-grievance-card');
+        if(!card){
+          host.insertAdjacentHTML('beforeend',`<section class="partner-card" id="partner-grievance-card"><h2>Beneficiary grievances & evidence</h2><p class="partner-help">Media evidence is shared with this registered organisation and authorised officials.</p><div id="partner-grievance-list"></div></section>`);
+        }
+        const gList = $('#partner-grievance-list');
+        if (gList) {
+          gList.innerHTML=data.feedback?.length?data.feedback.map(item=>`<article class="partner-report"><div><b>${esc(item.id)}</b><span>${new Date(item.submittedAt).toLocaleString('en-IN')}</span></div><strong>${esc(item.category)}</strong><p>${esc(item.message)}</p>${evidencePreview(item.evidence)}${item.evidence?`<small>✓ ${esc(item.evidence.integrity)} · ${esc(item.evidence.serverHash.slice(0,16))}…</small>`:''}</article>`).join(''):'<p class="partner-empty">No beneficiary grievances have been shared with this organisation.</p>';
+        }
+      }
+
+      const attSelect = $('#partner-att-proj-select');
+      const attWarning = $('#partner-att-no-proj-warning');
+      const attSubmitBtn = $('#partner-att-submit-btn');
+      if (!partnerProjects.length) {
+        if (attSelect) attSelect.innerHTML = '<option value="">No projects registered</option>';
+        if (attWarning) attWarning.style.display = 'block';
+        if (attSubmitBtn) attSubmitBtn.disabled = true;
+        const tableContainer = $('#partner-att-table-container');
+        if (tableContainer) tableContainer.innerHTML = '<p class="partner-empty">Please register your project below before marking staff attendance.</p>';
+        const badge = $('#partner-att-score-badge');
+        if (badge) badge.textContent = 'Project Attendance: --%';
+      } else {
+        if (attWarning) attWarning.style.display = 'none';
+        if (attSubmitBtn) attSubmitBtn.disabled = false;
+        if (attSelect) {
+          const prevVal = attSelect.value;
+          attSelect.innerHTML = partnerProjects.map(p => `<option value="${esc(p.id)}" ${p.id === prevVal ? 'selected' : ''}>${esc(p.name)} (${esc(p.scheme)})</option>`).join('');
+          loadPartnerAttendance(attSelect.value || partnerProjects[0].id);
+        }
+      }
+    } catch(err) {
+      console.warn('[Partner Portal Sync Error]', err.message);
     }
   };
 
@@ -2010,6 +2077,10 @@ function showPartnerPortal(user){
         <div id="partner-att-score-badge" style="background:#e0f2fe;color:#0369a1;padding:6px 14px;border-radius:20px;font-weight:700;font-size:12px">
           Project Attendance: --%
         </div>
+      </div>
+
+      <div id="partner-att-no-proj-warning" style="display:none;background:#fef3c7;border:1px solid #f59e0b;color:#92400e;padding:12px 16px;border-radius:8px;margin-bottom:14px;font-size:13px">
+        ⚠️ <b>No registered projects found.</b> Please register your project below before marking staff attendance.
       </div>
 
       <form id="partner-attendance-form" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));gap:12px;align-items:end;margin-bottom:18px;background:#f8fafc;padding:16px;border-radius:8px;border:1px solid #e2e8f0">
@@ -2054,7 +2125,7 @@ function showPartnerPortal(user){
         <input type="hidden" name="lng" id="partner-att-lng" />
         <input type="hidden" name="acc" id="partner-att-acc" />
         <div>
-          <button type="submit" class="primary" style="width:100%;padding:9px 12px;font-size:13px;font-weight:700">✓ Mark Attendance</button>
+          <button type="submit" id="partner-att-submit-btn" class="primary" style="width:100%;padding:9px 12px;font-size:13px;font-weight:700">✓ Mark Attendance</button>
         </div>
       </form>
 
@@ -2166,17 +2237,25 @@ function showPartnerPortal(user){
           body: JSON.stringify(payload)
         });
         const resData = await resp.json();
+        if (resp.status === 409) {
+          showToast(resData.error || 'Attendance for this staff member has already been recorded for this date.');
+          return;
+        }
         if (!resp.ok) throw new Error(resData.error || 'Failed to submit attendance');
-        showToast(`Attendance recorded! Project attendance score: ${resData.attendance}%`);
+        showToast(`Attendance recorded! Project attendance score: ${resData.attendance || resData.projectAttendance}%`);
         attForm.querySelector('input[name="staffName"]').value = '';
         attForm.querySelector('input[name="staffId"]').value = '';
+        $('#partner-att-lat').value = '';
+        $('#partner-att-lng').value = '';
+        $('#partner-att-acc').value = '';
+        $('#partner-att-geo-status').textContent = 'GPS Optional';
         await refresh();
         if (data.projectId) await loadPartnerAttendance(data.projectId);
       } catch(err) {
         showToast(err.message);
       } finally {
         submitBtn.disabled = false;
-        submitBtn.textContent = '✓ Submit Verified Attendance';
+        submitBtn.textContent = '✓ Mark Attendance';
       }
     };
   }
@@ -2205,8 +2284,7 @@ function showPartnerPortal(user){
   clearInterval(window.partnerDashboardSync);
   window.partnerDashboardSync=setInterval(refresh,5000);
 }
-async function syncPartnerEvidence(){const response=await api('/api/partner/dashboard',{cache:'no-store'});if(!response.ok)return;const data=await response.json(),host=$('.partner-activity');if(!host)return;let card=$('#partner-grievance-card');if(!card){host.insertAdjacentHTML('beforeend',`<section class="partner-card" id="partner-grievance-card"><h2>Beneficiary grievances & evidence</h2><p class="partner-help">Media evidence is shared with this registered organisation and authorised officials.</p><div id="partner-grievance-list"></div></section>`);card=$('#partner-grievance-card')}$('#partner-grievance-list').innerHTML=data.feedback?.length?data.feedback.map(item=>`<article class="partner-report"><div><b>${esc(item.id)}</b><span>${new Date(item.submittedAt).toLocaleString('en-IN')}</span></div><strong>${esc(item.category)}</strong><p>${esc(item.message)}</p>${evidencePreview(item.evidence)}${item.evidence?`<small>✓ ${esc(item.evidence.integrity)} · ${esc(item.evidence.serverHash.slice(0,16))}…</small>`:''}</article>`).join(''):'<p class="partner-empty">No beneficiary grievances have been shared with this organisation.</p>'}
-function startPartnerEvidenceSync(){clearInterval(window.partnerEvidenceSync);syncPartnerEvidence().catch(()=>{});window.partnerEvidenceSync=setInterval(()=>syncPartnerEvidence().catch(()=>{}),5000)}
+function startPartnerEvidenceSync(){if(window.partnerEvidenceSync)clearInterval(window.partnerEvidenceSync);window.partnerEvidenceSync=null;}
 function showLanding(){
   let page=document.querySelector('#public-portal');if(!page){page=document.createElement('div');page.id='public-portal';document.body.appendChild(page)}
   page.innerHTML=`<header class="portal-header"><div class="portal-brand"><span class="emblem">☸</span><div><b>सामाजिक न्याय और अधिकारिता विभाग</b><small>Department of Social Justice & Empowerment · Government of India</small></div></div><nav><a href="#about">About</a><a href="#monitoring">Monitoring</a><a href="#grievance">Grievances</a><button id="portal-partner" class="portal-login">NGO / Project Portal</button><button id="portal-login" class="portal-login">Official Login</button><button id="portal-signup" class="portal-signup">Official Sign Up</button></nav></header><main class="portal-main"><section class="portal-hero"><div><span class="flag-label">SMART GOVERNANCE PLATFORM</span><h1>Transparent monitoring.<br><i>Better public service.</i></h1><p>Real-time oversight of DoSJE-supported institutes, projects and NGOs—built for accountability and beneficiary welfare.</p><div class="hero-actions"><button id="hero-login" class="portal-login">Official Login →</button><button id="hero-partner" class="portal-outline">NGO / Project Portal</button><a href="#grievance" class="portal-outline">Share feedback</a></div></div><div class="hero-orbit"><span>☸</span><b>SAARTHI</b><small>Secure · Accountable · Accessible</small></div></section><section id="monitoring" class="portal-stats"><article><b>Live</b><span>Registered project data</span></article><article><b>4</b><span>Authorised phone CCTV slots</span></article><article><b>AI</b><span>Human-reviewed monitoring</span></article><article><b>24×7</b><span>Monitoring support</span></article></section><section id="about" class="portal-info"><div><span class="flag-label">ONE CONNECTED SYSTEM</span><h2>Monitoring that puts people first.</h2><p>Officials can monitor project compliance, conduct inspections, and act on alerts. Registered NGOs and institutes can submit their current project information directly. Beneficiaries can share concerns with the Department.</p></div><div class="info-cards"><article><span>◉</span><b>Live monitoring</b><p>Authorized CCTV, attendance and operational-status oversight.</p></article><article><span>✓</span><b>Fair inspections</b><p>Risk-based, transparent inspection assignments.</p></article><article><span>◎</span><b>Direct grievance access</b><p>Raise issues without depending on the NGO.</p></article></div></section><section id="grievance" class="grievance"><div class="grievance-copy"><span class="flag-label">BENEFICIARY FEEDBACK & GRIEVANCE</span><h2>Your voice matters.</h2><p>Share feedback or a concern about an NGO, project, institute, service, or staff member. Your grievance goes directly to the Department for review.</p><ul><li>You may submit anonymously.</li><li>You will receive a grievance reference number.</li><li>Urgent concerns may trigger a review or surprise inspection.</li></ul></div><form id="feedback-form" class="feedback-form"><h3>Submit feedback</h3><label>Project / NGO / Institute (optional)<input name="ngo" placeholder="Name of project or organisation"></label><label>Type of grievance<select name="category" required><option value="">Select a category</option><option>Service not provided</option><option>Staff misconduct</option><option>Fake attendance / reporting</option><option>Discrimination or harassment</option><option>Other concern</option></select></label><label>Tell us what happened<textarea name="message" placeholder="Write your feedback or grievance here…" required></textarea></label><label class="anonymous"><input type="checkbox" name="anonymous"> Submit anonymously</label><button class="portal-submit">Submit grievance securely</button><p id="feedback-result" class="feedback-result"></p></form></section></main><footer class="portal-footer"><div><b>Saarthi</b> · Smart Real-Time Monitoring & Inspection</div><span>© Department of Social Justice & Empowerment, Government of India</span></footer>`;
@@ -2232,7 +2310,7 @@ const hashFile=async file=>{const digest=await crypto.subtle.digest('SHA-256',aw
 async function submitFeedback(e){e.preventDefault();const form=e.currentTarget,data=Object.fromEntries(new FormData(form));data.phone=String(data.phone||'').replace(/\D/g,'');const result=$('#feedback-result'),file=data.evidenceFile;delete data.evidenceFile;if(!/^\d{10}$/.test(data.phone)){result.textContent='Enter a valid 10-digit beneficiary mobile number.';result.className='feedback-result error';return}if(file?.size){if(file.size>3_000_000){result.textContent='Evidence must be 3 MB or smaller.';result.className='feedback-result error';return}const selected=String(data.evidenceType||'');if(selected&&!file.type.startsWith(`${selected}/`)){result.textContent=`Select a ${selected} file or change the evidence type.`;result.className='feedback-result error';return}try{result.textContent='Hashing evidence securely…';result.className='feedback-result';data.evidence={name:file.name,type:file.type,data:await readAsDataUrl(file),clientHash:await hashFile(file),capturedAt:new Date().toISOString()}}catch{result.textContent='Could not process this evidence file.';result.className='feedback-result error';return}}else if(data.evidenceType){result.textContent='Choose the evidence file you selected.';result.className='feedback-result error';return}delete data.evidenceType;data.anonymous=Boolean(data.anonymous);const r=await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});if(r.status===404){const ref='GRV-'+Math.floor(100000+Math.random()*899999);result.textContent=`Grievance submitted. Your reference number is ${ref}.`;result.className='feedback-result success';form.reset();return}const x=await r.json();if(!r.ok){result.textContent=x.error;result.className='feedback-result error';return}result.textContent=`Grievance submitted securely. Reference number: ${x.reference}.`;result.className='feedback-result success';form.reset()}
 function authError(message){const form=$('#auth-form');let error=form.querySelector('.auth-error');if(!error){error=document.createElement('div');error.className='auth-error';form.prepend(error)}error.textContent=message}
 const authStyle=document.createElement('style');authStyle.textContent=`#auth-gate{position:fixed;inset:0;z-index:30;background:#eff5f1;font-family:DM Sans,sans-serif}.auth-shell{min-height:100%;display:grid;grid-template-columns:1.1fr .9fr}.auth-panel{background:linear-gradient(145deg,#093b2f,#175a45);color:#fff;padding:58px clamp(35px,8vw,130px);display:flex;flex-direction:column}.auth-brand{font:800 27px Manrope;display:flex;gap:10px;align-items:center}.auth-brand b{color:#0b3d30;background:#d5f36a;padding:5px 8px;border-radius:9px;font-size:16px}.auth-copy{margin:auto 0}.auth-kicker{font:700 10px DM Sans;letter-spacing:1.3px;color:#7cb9a2}.auth-copy h1{font:800 clamp(32px,4vw,54px) Manrope;line-height:1.12;max-width:550px;margin:18px 0}.auth-copy p{font-size:16px;line-height:1.7;color:#c5dbd1;max-width:490px}.auth-points{display:grid;gap:13px;margin-top:36px;color:#e7f5ec;font-size:13px}.auth-card{display:grid;place-items:center;padding:40px}.auth-card>div{width:min(390px,100%)}.auth-card h2{font:800 29px Manrope;margin:10px 0 5px}.auth-muted{color:#6b7774;line-height:1.55;margin:0 0 25px}.auth-form{display:grid;gap:15px}.auth-form label{font-size:12px;font-weight:700;color:#344640;display:grid;gap:7px}.auth-form input{padding:12px;border:1px solid #dbe5e0;border-radius:8px;font:14px DM Sans}.auth-primary{border:0;background:#167d59;color:#fff;padding:13px;border-radius:8px;font:700 14px DM Sans;cursor:pointer;margin-top:4px}.auth-switch{text-align:center;color:#6b7774;font-size:13px;margin-top:22px}.auth-switch button,.back{border:0;background:transparent;color:#167d59;font-weight:700;cursor:pointer}.back{padding:0;margin-bottom:20px}.demo-note{margin-top:22px;background:#f0f7f3;border-radius:8px;padding:11px;color:#557068;font-size:11px;line-height:1.55}.auth-error{background:#ffebe9;color:#b8312f;padding:9px;border-radius:7px;font-size:12px;margin-bottom:12px}@media(max-width:760px){.auth-shell{grid-template-columns:1fr}.auth-panel{min-height:260px;padding:30px}.auth-copy{margin-top:45px}.auth-copy h1{font-size:30px}.auth-copy p,.auth-points{display:none}.auth-card{padding:34px 25px}}`;document.head.appendChild(authStyle);
-const partnerStyle=document.createElement('style');partnerStyle.textContent=`#partner-portal{position:fixed;inset:0;z-index:35;overflow:auto;background:#eff5f1;color:#173b5e;font-family:DM Sans,sans-serif}.partner-shell{max-width:1100px;margin:auto;padding:45px 24px}.partner-shell header{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:28px}.partner-shell h1{font:800 34px Manrope;margin:8px 0}.partner-shell header p{max-width:620px;color:#5c7280;line-height:1.55}.partner-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(260px,.9fr);gap:20px}.partner-card{background:#fff;padding:25px;border-radius:13px;box-shadow:0 8px 25px #11385814}.partner-card h2{font:800 21px Manrope;margin:0 0 18px}.partner-card form,.partner-card{display:grid;gap:13px}.partner-card label{display:grid;gap:6px;font-size:12px;font-weight:700;color:#344d5c}.partner-card input,.partner-card select{padding:11px;border:1px solid #d6e2e7;border-radius:7px;font:14px DM Sans}.partner-coordinates{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;background:#eef6f0;border-radius:7px;font-size:11px;color:#4c6c5c}.partner-project-list{list-style:none;padding:0;margin:0;display:grid;gap:10px}.partner-project-list li{padding:12px;border-left:3px solid #e87826;background:#fff8f0;border-radius:4px}.partner-project-list b{display:block;font-size:13px}.partner-project-list span{font-size:11px;color:#607382}.dashboard-link{border:0;text-align:left;cursor:pointer;font:inherit;color:inherit;width:100%}.dashboard-link:hover{outline:2px solid #e87826}.map-pending{color:#54758d}@media(max-width:720px){.partner-shell{padding:28px 16px}.partner-shell header,.partner-grid{display:grid;grid-template-columns:1fr}.partner-shell h1{font-size:28px}.partner-coordinates{align-items:start;flex-direction:column}}`;document.head.appendChild(partnerStyle);
+const partnerStyle=document.createElement('style');partnerStyle.textContent=`#partner-portal{position:fixed;inset:0;z-index:35;overflow:auto;background:#eff5f1;color:#173b5e;font-family:DM Sans,sans-serif}.partner-shell{max-width:1100px;margin:auto;padding:45px 24px}.partner-shell header{display:flex;justify-content:space-between;gap:20px;align-items:start;margin-bottom:28px}.partner-shell h1{font:800 34px Manrope;margin:8px 0}.partner-shell header p{max-width:620px;color:#5c7280;line-height:1.55}.partner-grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(260px,.9fr);gap:20px}.partner-card{background:#fff;padding:25px;border-radius:13px;box-shadow:0 8px 25px #11385814}.partner-card h2{font:800 21px Manrope;margin:0 0 18px}.partner-card form,.partner-card{display:grid;gap:13px}.partner-card label{display:grid;gap:6px;font-size:12px;font-weight:700;color:#344d5c}.partner-card input,.partner-card select{padding:11px;border:1px solid #d6e2e7;border-radius:7px;font:14px DM Sans}.partner-coordinates{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;background:#eef6f0;border-radius:7px;font-size:11px;color:#4c6c5c}.partner-project-list{list-style:none;padding:0;margin:0;display:grid;gap:10px}.partner-project-list li{padding:12px;border-left:3px solid #e87826;background:#fff8f0;border-radius:4px}.partner-project-list b{display:block;font-size:13px}.partner-project-list span{font-size:11px;color:#607382}.dashboard-link{border:0;text-align:left;cursor:pointer;font:inherit;color:inherit;width:100%}.dashboard-link:hover{outline:2px solid #e87826}.map-pending{color:#54758d}@media(max-width:720px){.partner-shell{padding:20px 12px}.partner-shell header,.partner-grid{display:grid;grid-template-columns:1fr}.partner-shell h1{font-size:24px}.partner-coordinates{align-items:start;flex-direction:column}#partner-attendance-form{grid-template-columns:1fr !important;padding:12px !important}#partner-att-table-container{overflow-x:auto;-webkit-overflow-scrolling:touch}}`;document.head.appendChild(partnerStyle);
 const partnerDashboardStyle=document.createElement('style');partnerDashboardStyle.textContent=`.partner-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:20px}.partner-stats article{background:#123b68;color:#fff;padding:18px;border-radius:11px}.partner-stats span{display:block;font-size:11px;color:#c9ddeb}.partner-stats b{display:block;font:800 31px Manrope;margin-top:4px}.partner-activity{display:grid;grid-template-columns:.9fr 1.1fr;gap:20px;margin-top:20px}.partner-help{font-size:12px;color:#63788c;line-height:1.5;margin:-7px 0 4px}.partner-project-list small{display:block;font-size:10px;color:#64798a;margin-top:4px}.partner-event.in-progress{border-left-color:#13804b;background:#edf8ef}.partner-event.completed{border-left-color:#1a5ca8;background:#eef5fb}.ground-live{color:#15854d;font-weight:bold;font-size:11px}.report-ready{color:#1a5ca8;font-weight:bold;font-size:11px}.start-ground{font-size:11px;white-space:nowrap;padding:8px 10px}.partner-report{padding:12px 0;border-bottom:1px solid #dce6eb;color:#445d6e;font-size:12px;line-height:1.45}.partner-report:last-child{border-bottom:0}.partner-report div{display:flex;justify-content:space-between;gap:10px}.partner-report div span,.partner-report small{font-size:10px;color:#718494}.partner-report strong{display:block;color:#173b5e;margin-top:5px}.partner-report p{margin:6px 0}.partner-empty{font-size:12px;color:#718494;margin:0}@media(max-width:720px){.partner-stats,.partner-activity{grid-template-columns:1fr}.partner-stats article{padding:14px}}`;document.head.appendChild(partnerDashboardStyle);
 const evidenceStyle=document.createElement('style');evidenceStyle.textContent=`.evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}.evidence-card{border:1px solid #dbe6ea;border-radius:10px;padding:14px;background:#fbfdfd}.evidence-card>div{display:flex;justify-content:space-between;gap:8px;align-items:center}.evidence-card>div small{font-size:10px;color:#718494}.evidence-card h3{font-size:14px;margin:12px 0 5px}.evidence-card p{font-size:12px;line-height:1.5;color:#576c78}.evidence-media{display:block;max-width:100%;width:100%;max-height:190px;border-radius:7px;margin-top:10px;background:#101d28}.evidence-media.image{object-fit:cover}.evidence-media.video{object-fit:contain}.evidence-none{display:block;color:#718494;font-size:11px;margin-top:8px}.integrity-note,.integrity-flag{display:block;font-size:10px;line-height:1.55;color:#1e6950;margin-top:10px}.integrity-flag{color:#a56300;margin-top:5px}.integrity-card{margin-top:18px;border-radius:11px;padding:18px;background:#edf5f1;border-left:4px solid #13804b;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.integrity-card h3{grid-column:1/-1;font-size:15px}.integrity-card div{font-size:11px;line-height:1.5;color:#536c64}.integrity-card b,.integrity-card span{display:block}.integrity-card b{color:#174e3d;margin-bottom:3px}@media(max-width:700px){.integrity-card{grid-template-columns:1fr}}`;document.head.appendChild(evidenceStyle);
 function showPartnerConfirmation(user,project){
@@ -2331,13 +2409,17 @@ if (mobileCctvParams.get('mobileCctv')) {
   try { user = JSON.parse(sessionStorage.saarthiUser || '{}'); } catch(e){}
   const path = String(location.pathname || '');
   const hash = String(location.hash || '');
-  const isNgo = user?.role === 'ngo_staff' || user?.role === 'Project / NGO Administrator' || path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo';
-  if (sessionStorage.saarthiToken && isNgo) {
+  const isNgoRole = user?.role === 'ngo_staff' || user?.role === 'Project / NGO Administrator';
+  const isNgoRoute = path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo';
+
+  if (sessionStorage.saarthiToken && isNgoRole) {
     showPartnerPortal(user || { name: 'NGO Staff', role: 'ngo_staff' });
-    startPartnerEvidenceSync();
+  } else if (sessionStorage.saarthiToken && isNgoRoute) {
+    showToast('Logged in as Official. Opening official dashboard.');
+    load().then(startDashboardSync);
   } else if (sessionStorage.saarthiToken) {
     load().then(startDashboardSync);
-  } else if (path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo') {
+  } else if (isNgoRoute) {
     showPartnerAuth();
   } else {
     showLanding();

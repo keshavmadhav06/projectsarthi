@@ -14,7 +14,7 @@ const User = require('./models/User');
 const AttendanceRecord = require('./models/AttendanceRecord');
 const Notification = require('./models/Notification');
 const Settings = require('./models/Settings');
-const { formatToIST, formatRelativeIST, logServerTime } = require('./utils/istTime');
+const { formatToIST, formatRelativeIST, getTodayISTString, logServerTime } = require('./utils/istTime');
 const { checkComplianceAnomaly, checkAttendanceAnomaly, getSettings } = require('./utils/anomalyDetector');
 const { handleChatbotMessage } = require('./utils/chatbot');
 
@@ -1304,12 +1304,45 @@ const handleAttendanceSubmit = async (req, res) => {
     return res.status(400).json({ error: 'Project ID, staff name, date, and check-in time are required.' });
   }
 
-  // Validate date cannot be in the future
-  const selectedDate = new Date(date + 'T00:00:00Z');
-  const today = new Date();
-  today.setUTCHours(23, 59, 59, 999);
-  if (selectedDate > today) {
+  // Validate date cannot be in the future (relative to IST)
+  const todayIST = getTodayISTString();
+  if (date > todayIST) {
     return res.status(400).json({ error: 'Attendance cannot be marked for a future date.' });
+  }
+
+  const trimmedStaffName = String(staffName).trim();
+  const trimmedStaffId = String(staffId || '').trim();
+
+  // Check for duplicate attendance on the same date for this project & staff member (in-memory)
+  const isDuplicate = memoryAttendance.some(r =>
+    r.projectId === projectId &&
+    r.date === date &&
+    ((trimmedStaffId && r.staffId && r.staffId.toLowerCase() === trimmedStaffId.toLowerCase()) ||
+     r.staffName.toLowerCase() === trimmedStaffName.toLowerCase())
+  );
+  if (isDuplicate) {
+    return res.status(409).json({
+      error: `Attendance for staff member '${trimmedStaffName}' on ${date} has already been recorded.`
+    });
+  }
+
+  if (isDBConnected()) {
+    try {
+      const orConditions = [{ staffName: new RegExp(`^${trimmedStaffName}$`, 'i') }];
+      if (trimmedStaffId) orConditions.push({ staffId: trimmedStaffId });
+      const existing = await AttendanceRecord.findOne({
+        projectId,
+        date,
+        $or: orConditions
+      });
+      if (existing) {
+        return res.status(409).json({
+          error: `Attendance for staff member '${trimmedStaffName}' on ${date} has already been recorded.`
+        });
+      }
+    } catch (e) {
+      console.warn('[DB Attendance Duplicate Check Error]', e.message);
+    }
   }
 
   const project = memorySites.find(s => s.id === projectId);

@@ -113,11 +113,24 @@ function logServerTime() {
   console.log(`[Clock Audit] Local IST: ${formatToIST(now, { seconds: '2-digit' })} (Asia/Kolkata)`);
 }
 
+/**
+ * Get current date as YYYY-MM-DD in IST
+ */
+function getTodayISTString(dateInput = new Date()) {
+  const parts = getISTParts(dateInput);
+  if (!parts) return new Date().toISOString().split('T')[0];
+  const y = parts.year;
+  const m = String(parts.month).padStart(2, '0');
+  const d = String(parts.day).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 module.exports = {
   IST_TIMEZONE,
   getISTParts,
   formatToIST,
   formatRelativeIST,
   getISTGreeting,
+  getTodayISTString,
   logServerTime
 };
