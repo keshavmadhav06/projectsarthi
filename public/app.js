@@ -111,6 +111,8 @@ async function captureActionGeolocation() {
 }
 
 async function load(){
+  if(typeof cleanupLandingMap==='function')cleanupLandingMap();
+  document.querySelector('#public-portal')?.remove();
   if(!sessionStorage.saarthiUser){
     sessionStorage.saarthiUser=JSON.stringify({name:'Arjun Mehta',employeeId:'GOV-2026-1001',role:'PMU Inspector'});
   }
@@ -1617,6 +1619,7 @@ async function logout(){
   if (window.partnerEvidenceSync) { clearInterval(window.partnerEvidenceSync); window.partnerEvidenceSync = null; }
   delete sessionStorage.saarthiToken;
   delete sessionStorage.saarthiUser;
+  cleanupLandingMap();
   $('#profile-menu')?.remove();
   $('#partner-portal')?.remove();
   $('#auth-gate')?.remove();
@@ -1674,6 +1677,109 @@ function initIndiaMap(){
   const delta=0.035,bounds=[point.lng-delta,point.lat-delta,point.lng+delta,point.lat+delta].map(v=>v.toFixed(6)).join('%2C');
   const marker=`${point.lat.toFixed(6)}%2C${point.lng.toFixed(6)}`;
   el.innerHTML=`<iframe class="official-map-frame" title="Registered project location map" loading="eager" src="https://www.openstreetmap.org/export/embed.html?bbox=${bounds}&layer=mapnik&marker=${marker}"></iframe><div class="official-map-label"><b>${esc(point.name)}</b><span>${esc(point.district)}, ${esc(point.state)}</span></div>`;
+}
+
+function cleanupLandingMap(){
+  if(window.landingHeroMap){
+    try{window.landingHeroMap.remove();}catch(e){}
+    window.landingHeroMap=null;
+  }
+  const el=$('#landing-hero-map');
+  if(el&&el._leaflet_id){
+    delete el._leaflet_id;
+  }
+}
+
+async function initLandingHeroMap(){
+  const el=$('#landing-hero-map');
+  if(!el) return;
+  cleanupLandingMap();
+
+  const defaultSites = [
+    { id: 'P-2041', name: 'Udaan Skill Centre (sample)', district: 'Lucknow', state: 'Uttar Pradesh', risk: 'High', score: 58, lat: 26.8467, lng: 80.9462 },
+    { id: 'P-1872', name: 'Saksham Residential Institute', district: 'Jaipur', state: 'Rajasthan', risk: 'Medium', score: 75, lat: 26.9124, lng: 75.7873 },
+    { id: 'P-3108', name: 'Nayi Disha Foundation', district: 'Bhopal', state: 'Madhya Pradesh', risk: 'Low', score: 88, lat: 23.2599, lng: 77.4126 },
+    { id: 'P-2234', name: 'Aasha Rehabilitation Centre', district: 'Patna', state: 'Bihar', risk: 'High', score: 50, lat: 25.5941, lng: 85.1376 },
+    { id: 'P-1146', name: 'Prerna Education Trust', district: 'Kolkata', state: 'West Bengal', risk: 'Low', score: 100, lat: 22.5726, lng: 88.3639 },
+    { id: 'P-4011', name: 'Bengaluru Skill Academy', district: 'Bengaluru', state: 'Karnataka', risk: 'Medium', score: 63, lat: 12.9716, lng: 77.5946 }
+  ];
+
+  try {
+    await ensureLeaflet();
+    const currentEl = $('#landing-hero-map');
+    if (!currentEl) return;
+    if (currentEl._leaflet_id) {
+      delete currentEl._leaflet_id;
+    }
+
+    const map = L.map(currentEl, {
+      scrollWheelZoom: false,
+      zoomControl: true,
+      attributionControl: true,
+      preferCanvas: true
+    }).setView([22.5, 79.2], 4.5);
+    window.landingHeroMap = map;
+
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const colors = { High: '#e53935', Medium: '#f59e0b', Low: '#167d59' };
+
+    const renderMarkers = (sites) => {
+      if (!sites || !sites.length) return;
+      const validSites = sites.filter(s => Number.isFinite(s.lat) && Number.isFinite(s.lng));
+      const points = [];
+      validSites.forEach(site => {
+        const color = colors[site.risk] || '#167d59';
+        const marker = L.circleMarker([site.lat, site.lng], {
+          radius: 7,
+          color: '#ffffff',
+          weight: 2,
+          fillColor: color,
+          fillOpacity: 0.95
+        }).addTo(map);
+        marker.bindPopup(`<b>${esc(site.name)}</b><br>${esc(site.district)}, ${esc(site.state)}<br>Risk: <b style="color:${color}">${esc(site.risk)}</b> · Compliance: ${site.score}%`);
+        points.push([site.lat, site.lng]);
+      });
+      if (points.length > 1) {
+        map.fitBounds(points, { padding: [24, 24], maxZoom: 6 });
+      } else if (points.length === 1) {
+        map.setView(points[0], 8);
+      }
+    };
+
+    // Render immediate default sites so map is instantly populated
+    renderMarkers(defaultSites);
+
+    // Fetch latest live sites from /api/projects in background
+    fetch('/api/projects')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (data && data.sites && data.sites.length && window.landingHeroMap === map) {
+          map.eachLayer(layer => {
+            if (layer instanceof L.CircleMarker) map.removeLayer(layer);
+          });
+          renderMarkers(data.sites);
+        }
+      })
+      .catch(() => {});
+
+    requestAnimationFrame(() => {
+      try { map.invalidateSize({ animate: false }); } catch(e){}
+    });
+    setTimeout(() => {
+      try { map.invalidateSize({ animate: false }); } catch(e){}
+    }, 180);
+
+  } catch (err) {
+    console.warn('[Landing Hero Map Error]', err);
+    const fallbackEl = $('#landing-hero-map');
+    if (fallbackEl) {
+      fallbackEl.innerHTML = '<div class="hero-map-fallback"><b>Live Project Oversight Active</b><p style="margin:4px 0 0;font-size:11px;color:#9cb8d2">6 registered projects monitored across India</p></div>';
+    }
+  }
 }
 
 function vcModal(site){
@@ -1801,7 +1907,7 @@ async function sendMobileCctvSignal(roomId,clientId,signal,target=null){return a
 async function pollMobileCctvSignals(slot){const current=window.mobileCctv?.[slot];if(!current)return;try{const response=await api(`/api/mobile-cctv/signals?roomId=${encodeURIComponent(current.roomId)}&clientId=${encodeURIComponent(current.clientId)}&t=${Date.now()}`,{cache:'no-store'});if(!response.ok)return;const {signals}=await response.json();for(const message of signals){const signal=message.signal;if(signal.kind==='offer'){current.phoneId=message.from;await current.peer.setRemoteDescription(new RTCSessionDescription(signal.sdp));for(const candidate of current.pendingCandidates.splice(0))await current.peer.addIceCandidate(candidate);const answer=await current.peer.createAnswer();await current.peer.setLocalDescription(answer);await sendMobileCctvSignal(current.roomId,current.clientId,{kind:'answer',sdp:answer},current.phoneId)}else if(signal.kind==='candidate'){const candidate=new RTCIceCandidate(signal.candidate);if(current.peer.remoteDescription)await current.peer.addIceCandidate(candidate);else current.pendingCandidates.push(candidate)}}}catch{}}
 function startCctvAnalysis(slot,video){if(window.mobileCctv?.[slot]?.analysis)return;const canvas=document.createElement('canvas');canvas.width=48;canvas.height=36;const context=canvas.getContext('2d',{willReadFrequently:true});let previous=null;window.mobileCctv[slot].analysis=setInterval(()=>{if(video.readyState<2)return;context.drawImage(video,0,0,48,36);const data=context.getImageData(0,0,48,36).data;if(previous){let change=0;for(let i=0;i<data.length;i+=12)change+=Math.abs(data[i]-previous[i]);const average=change/(data.length/12);const label=$(`#cctv-ai-status-${slot}`);if(average>26){label.textContent='AI alert: Unusual movement detected — review required';label.classList.add('ai-alert')}else{label.textContent='AI: Feed stable · movement within normal range';label.classList.remove('ai-alert')}}previous=data},2500)}
 function startCctvImageAnalysis(slot,image){if(window.mobileCctv?.[slot]?.relayAnalysis)return;const canvas=document.createElement('canvas');canvas.width=48;canvas.height=36;const context=canvas.getContext('2d',{willReadFrequently:true});let previous=null;window.mobileCctv[slot].relayAnalysis=setInterval(()=>{if(!image.complete||!image.naturalWidth)return;context.drawImage(image,0,0,48,36);const data=context.getImageData(0,0,48,36).data;if(previous){let change=0;for(let i=0;i<data.length;i+=12)change+=Math.abs(data[i]-previous[i]);const average=change/(data.length/12),label=$(`#cctv-ai-status-${slot}`);if(average>26){label.textContent='AI alert: Unusual movement detected — review required';label.classList.add('ai-alert')}else{label.textContent='AI: Live relay stable · movement within normal range';label.classList.remove('ai-alert')}}previous=data},2500)}
-function showMobileCctvPhone(roomId,slot){document.querySelector('#public-portal')?.remove();document.querySelector('#auth-gate')?.remove();const panel=document.createElement('div');panel.id='mobile-cctv-phone';panel.innerHTML=`<div class="phone-camera-panel"><span>SAARTHI · AUTHORIZED FIELD DEVICE</span><h1>Mobile CCTV camera ${esc(slot||'')}</h1><p>Allow camera access. Keep this page open while the official dashboard receives your live feed.</p><video id="phone-camera-preview" autoplay muted playsinline></video><button id="start-phone-cctv">Start secure camera</button><p id="phone-camera-status">Ready to connect.</p></div>`;document.body.appendChild(panel);$('#start-phone-cctv').onclick=()=>startPhoneCctv(roomId,slot)}
+function showMobileCctvPhone(roomId,slot){cleanupLandingMap();document.querySelector('#public-portal')?.remove();document.querySelector('#auth-gate')?.remove();const panel=document.createElement('div');panel.id='mobile-cctv-phone';panel.innerHTML=`<div class="phone-camera-panel"><span>SAARTHI · AUTHORIZED FIELD DEVICE</span><h1>Mobile CCTV camera ${esc(slot||'')}</h1><p>Allow camera access. Keep this page open while the official dashboard receives your live feed.</p><video id="phone-camera-preview" autoplay muted playsinline></video><button id="start-phone-cctv">Start secure camera</button><p id="phone-camera-status">Ready to connect.</p></div>`;document.body.appendChild(panel);$('#start-phone-cctv').onclick=()=>startPhoneCctv(roomId,slot)}
 async function startPhoneCctv(roomId,slot){const button=$('#start-phone-cctv');try{button.disabled=true;button.textContent='Starting camera…';const phoneId=crypto.randomUUID();const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});$('#phone-camera-preview').srcObject=stream;startPhoneFrameRelay(roomId,stream);const peer=new RTCPeerConnection(mobileRtcConfig);const pendingCandidates=[];let monitorId=null;const send=(signal,target=null)=>fetch(`/api/mobile-cctv/signal`,{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({roomId,clientId:phoneId,signal,target})});peer.onicecandidate=e=>{if(e.candidate&&monitorId)send({kind:'candidate',candidate:e.candidate},monitorId)};peer.onconnectionstatechange=()=>{if(peer.connectionState==='connected')$('#phone-camera-status').textContent='Live — your phone is now shown in CCTV monitoring.';if(peer.connectionState==='failed'){$('#phone-camera-status').textContent='Secure live relay is active; direct video connection is unavailable on this network.';button.disabled=false;button.textContent='Try again'}};stream.getTracks().forEach(track=>peer.addTrack(track,stream));$('#phone-camera-status').textContent='Camera started. Sending secure live relay…';setInterval(async()=>{try{const response=await fetch(`/api/mobile-cctv/signals?roomId=${encodeURIComponent(roomId)}&clientId=${encodeURIComponent(phoneId)}&t=${Date.now()}`,{cache:'no-store'});if(!response.ok)return;const {signals}=await response.json();for(const message of signals){const signal=message.signal;if(signal.kind==='monitor-ready'&&!monitorId){monitorId=signal.monitorId;const offer=await peer.createOffer();await peer.setLocalDescription(offer);await send({kind:'offer',sdp:offer},monitorId)}else if(signal.kind==='answer'){await peer.setRemoteDescription(new RTCSessionDescription(signal.sdp));for(const candidate of pendingCandidates.splice(0))await peer.addIceCandidate(candidate)}else if(signal.kind==='candidate'){const candidate=new RTCIceCandidate(signal.candidate);if(peer.remoteDescription)await peer.addIceCandidate(candidate);else pendingCandidates.push(candidate)}}}catch{}},800)}catch{button.disabled=false;button.textContent='Start secure camera';$('#phone-camera-status').textContent='Camera permission was not granted. Allow camera access and try again.'}}
 function startPhoneFrameRelay(roomId,stream){const preview=$('#phone-camera-preview'),canvas=document.createElement('canvas');canvas.width=320;canvas.height=180;const context=canvas.getContext('2d',{alpha:false});let sending=false;setInterval(async()=>{if(sending||preview.readyState<2||document.hidden)return;sending=true;try{context.drawImage(preview,0,0,canvas.width,canvas.height);const image=canvas.toDataURL('image/jpeg',.5);await fetch('/api/mobile-cctv/frame',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({roomId,image})});$('#phone-camera-status').textContent='Live — secure camera relay is active.'}catch{}finally{sending=false}},550)}
 async function sendCameraSignal(signal){return api('/api/camera/signal',{method:'POST',body:JSON.stringify({roomId:window.cameraRoom,clientId:window.cameraClientId,signal})})}
@@ -1816,6 +1922,7 @@ const closeModalBtn=$('#close-modal'); if(closeModalBtn) closeModalBtn.onclick=c
 const modalEl=$('#modal'); if(modalEl) modalEl.onclick=e=>{if(e.target.id==='modal')closeModal()};
 document.addEventListener('click',async e=>{if(e.target.classList.contains('resolve-notif-btn')){const notifId=e.target.dataset.notifId;const noteInput=$(`#resolve-note-${notifId}`);const notes=noteInput?noteInput.value.trim():'Resolved via dashboard';e.target.disabled=true;e.target.textContent='Resolving…';try{const res=await api(`/api/notifications/${notifId}/resolve`,{method:'PUT',body:JSON.stringify({notes})});if(res.ok){showToast('Anomaly notification resolved.');await refreshNotificationBadge();openModal(notificationsModal());}else{showToast('Could not resolve notification.');e.target.disabled=false;e.target.textContent='Resolve';}}catch(err){showToast('Could not resolve notification.');e.target.disabled=false;e.target.textContent='Resolve';}return;}if(e.target.id==='close-form')closeModal();if(e.target.closest('.nav')){state.view=e.target.closest('.nav').dataset.view;render()}if(e.target.closest('#inspection-assign-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const form=e.target.closest('form'),data=Object.fromEntries(new FormData(form)),method=e.target.value;if(String(data.location||'').startsWith('GPS location'))return showToast('Capture the current GPS location before assigning this inspection.');if(method==='specific'&&!data.inspectorName)return showToast('Select an inspector before using Specific assign.');const button=e.target;button.disabled=true;button.textContent='Assigning…';await assign(data.siteId,{due:data.due,priority:data.priority,notes:data.notes,finding:data.finding,evidence:data.evidence,location:data.location,inspectorName:method==='specific'?data.inspectorName:''});closeModal();state.view='inspections';render()}}if(e.target.closest('#report-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const f=new FormData(e.target.closest('form'));const data=Object.fromEntries(f);if(String(data.location||'').startsWith('GPS location'))return showToast('Capture the current GPS location before submitting the report.');await api('/api/reports',{method:'POST',body:JSON.stringify(data)});closeModal();state.view='reports';await load();showToast('Verified inspection report submitted')}}if(e.target.closest('#vc-form')){e.preventDefault();if(e.target.tagName==='BUTTON'&&e.target.type!=='button'){const data=Object.fromEntries(new FormData(e.target.closest('form')));await api('/api/vc',{method:'POST',body:JSON.stringify(data)});closeModal();await load();showToast('Secure VC verification request sent')}}});
 function showAuth(){
+  cleanupLandingMap();
   document.querySelector('#public-portal')?.remove();
   let gate=document.querySelector('#auth-gate'); if(!gate){gate=document.createElement('div');gate.id='auth-gate';document.body.appendChild(gate)}
   gate.innerHTML=`<section class="auth-shell"><div class="auth-panel"><div class="auth-brand"><b>Ｓ</b><span>Saarthi</span></div><div class="auth-copy"><span class="auth-kicker">DEPARTMENT OF SOCIAL JUSTICE & EMPOWERMENT</span><h1>Secure monitoring starts with verified access.</h1><p>Use your official government employee identity to access programme monitoring and inspection workflows.</p><div class="auth-points"><span>✓ Role-based access</span><span>✓ Audit-ready activity</span><span>✓ Protected beneficiary data</span></div></div></div><div class="auth-card"><div id="auth-form"></div></div></section>`;
@@ -1843,7 +1950,7 @@ const authVerify=(email,code,pending)=>{
   const gs = $('#go-signup'); if(gs) gs.onclick=authSignup;
   const vf = $('#verify-form'); if(vf) vf.onsubmit=async e=>{e.preventDefault();const entered=new FormData(e.target).get('code');const r=await api('/api/auth/verify',{method:'POST',body:JSON.stringify({email,code:entered})}),x=await r.json();if(r.status===404){if(entered!=='123456')return authError('Invalid verification code.');const user={name:pending.name,email,employeeId:pending.employeeId.toUpperCase(),password:pending.password,role:'Department Official'};const users=localAccounts().filter(a=>a.email!==email);users.push(user);localStorage.setItem('saarthiLocalAccounts',JSON.stringify(users));return completeLogin({token:'local-'+crypto.randomUUID(),user})}if(!r.ok)return authError(x.error);completeLogin(x)};
 };
-function completeLogin(x){sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate')?.remove();if(x.user.role==='Project / NGO Administrator'||x.user.role==='ngo_staff'){showPartnerPortal(x.user);return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
+function completeLogin(x){cleanupLandingMap();sessionStorage.saarthiToken=x.token;sessionStorage.saarthiUser=JSON.stringify(x.user);$('#auth-gate')?.remove();if(x.user.role==='Project / NGO Administrator'||x.user.role==='ngo_staff'){showPartnerPortal(x.user);return}load().then(startDashboardSync);showToast(`Verified access granted — ${x.user.role}`)}
 function showPartnerAuth(){
   showAuth();
   $('#auth-form').innerHTML=`<button class="back" id="back-portal">← Back to public portal</button><span class="auth-kicker">REGISTERED ORGANISATION ACCESS</span><h2>Project / NGO portal</h2><p class="auth-muted">Sign in to see your project dashboard, live inspection updates, attendance marking and verified reports.</p><form id="partner-login-form" class="auth-form"><label>DoSJE registration ID or email<input name="identifier" value="NGO/2026/1001" placeholder="NGO/2026/1001 or organisation@email.org" required></label><label>Password<input name="password" type="password" value="Saarthi@2026" placeholder="Enter your password" required></label><button class="auth-primary">Sign in to organisation dashboard</button></form><p class="auth-switch">New organisation? <button id="partner-signup">Register organisation</button></p><div class="demo-note"><b>Project / NGO Admin account:</b><br><b>Registration ID:</b> NGO/2026/1001<br><b>Email:</b> udan@dosje-demo.org<br><b>Password:</b> Saarthi@2026<br><br><b>NGO Staff account:</b><br><b>Email:</b> staff@dosje-demo.org<br><b>Password:</b> Saarthi@2026</div>`;
@@ -1921,6 +2028,8 @@ const indiaStates = [
 ];
 
 function showPartnerPortal(user){
+  if(typeof cleanupLandingMap==='function')cleanupLandingMap();
+  document.querySelector('#public-portal')?.remove();
   let page=document.querySelector('#partner-portal');
   if(!page){page=document.createElement('div');page.id='partner-portal';document.body.appendChild(page)}
   const todayStr = typeof window.getTodayISTString === 'function' ? window.getTodayISTString() : new Date().toISOString().split('T')[0];
@@ -2286,8 +2395,9 @@ function showPartnerPortal(user){
 }
 function startPartnerEvidenceSync(){if(window.partnerEvidenceSync)clearInterval(window.partnerEvidenceSync);window.partnerEvidenceSync=null;}
 function showLanding(){
+  cleanupLandingMap();
   let page=document.querySelector('#public-portal');if(!page){page=document.createElement('div');page.id='public-portal';document.body.appendChild(page)}
-  page.innerHTML=`<header class="portal-header"><div class="portal-brand"><span class="emblem">☸</span><div><b>सामाजिक न्याय और अधिकारिता विभाग</b><small>Department of Social Justice & Empowerment · Government of India</small></div></div><nav><a href="#about">About</a><a href="#monitoring">Monitoring</a><a href="#grievance">Grievances</a><button id="portal-partner" class="portal-login">NGO / Project Portal</button><button id="portal-login" class="portal-login">Official Login</button><button id="portal-signup" class="portal-signup">Official Sign Up</button></nav></header><main class="portal-main"><section class="portal-hero"><div><span class="flag-label">SMART GOVERNANCE PLATFORM</span><h1>Transparent monitoring.<br><i>Better public service.</i></h1><p>Real-time oversight of DoSJE-supported institutes, projects and NGOs—built for accountability and beneficiary welfare.</p><div class="hero-actions"><button id="hero-login" class="portal-login">Official Login →</button><button id="hero-partner" class="portal-outline">NGO / Project Portal</button><a href="#grievance" class="portal-outline">Share feedback</a></div></div><div class="hero-orbit"><span>☸</span><b>SAARTHI</b><small>Secure · Accountable · Accessible</small></div></section><section id="monitoring" class="portal-stats"><article><b>Live</b><span>Registered project data</span></article><article><b>4</b><span>Authorised phone CCTV slots</span></article><article><b>AI</b><span>Human-reviewed monitoring</span></article><article><b>24×7</b><span>Monitoring support</span></article></section><section id="about" class="portal-info"><div><span class="flag-label">ONE CONNECTED SYSTEM</span><h2>Monitoring that puts people first.</h2><p>Officials can monitor project compliance, conduct inspections, and act on alerts. Registered NGOs and institutes can submit their current project information directly. Beneficiaries can share concerns with the Department.</p></div><div class="info-cards"><article><span>◉</span><b>Live monitoring</b><p>Authorized CCTV, attendance and operational-status oversight.</p></article><article><span>✓</span><b>Fair inspections</b><p>Risk-based, transparent inspection assignments.</p></article><article><span>◎</span><b>Direct grievance access</b><p>Raise issues without depending on the NGO.</p></article></div></section><section id="grievance" class="grievance"><div class="grievance-copy"><span class="flag-label">BENEFICIARY FEEDBACK & GRIEVANCE</span><h2>Your voice matters.</h2><p>Share feedback or a concern about an NGO, project, institute, service, or staff member. Your grievance goes directly to the Department for review.</p><ul><li>You may submit anonymously.</li><li>You will receive a grievance reference number.</li><li>Urgent concerns may trigger a review or surprise inspection.</li></ul></div><form id="feedback-form" class="feedback-form"><h3>Submit feedback</h3><label>Project / NGO / Institute (optional)<input name="ngo" placeholder="Name of project or organisation"></label><label>Type of grievance<select name="category" required><option value="">Select a category</option><option>Service not provided</option><option>Staff misconduct</option><option>Fake attendance / reporting</option><option>Discrimination or harassment</option><option>Other concern</option></select></label><label>Tell us what happened<textarea name="message" placeholder="Write your feedback or grievance here…" required></textarea></label><label class="anonymous"><input type="checkbox" name="anonymous"> Submit anonymously</label><button class="portal-submit">Submit grievance securely</button><p id="feedback-result" class="feedback-result"></p></form></section></main><footer class="portal-footer"><div><b>Saarthi</b> · Smart Real-Time Monitoring & Inspection</div><span>© Department of Social Justice & Empowerment, Government of India</span></footer>`;
+  page.innerHTML=`<header class="portal-header"><div class="portal-brand"><span class="emblem">☸</span><div><b>सामाजिक न्याय और अधिकारिता विभाग</b><small>Department of Social Justice & Empowerment · Government of India</small></div></div><nav><a href="#about">About</a><a href="#monitoring">Monitoring</a><a href="#grievance">Grievances</a><button id="portal-partner" class="portal-login">NGO / Project Portal</button><button id="portal-login" class="portal-login">Official Login</button><button id="portal-signup" class="portal-signup">Official Sign Up</button></nav></header><main class="portal-main"><section class="portal-hero"><div class="portal-hero-text"><span class="flag-label">SMART GOVERNANCE PLATFORM</span><h1>Transparent monitoring.<br><i>Better public service.</i></h1><p>Real-time oversight of DoSJE-supported institutes, projects and NGOs—built for accountability and beneficiary welfare.</p><div class="hero-actions"><button id="hero-login" class="portal-login">Official Login →</button><button id="hero-partner" class="portal-outline">NGO / Project Portal</button><a href="#grievance" class="portal-outline">Share feedback</a></div></div><div class="portal-hero-map-wrap"><div class="hero-map-header"><div class="hero-map-title"><span class="live-pulse"></span><b>Live Nationwide Project Oversight</b></div><div class="hero-map-legend"><span class="legend-dot low"></span> Low risk <span class="legend-dot med"></span> Med <span class="legend-dot high"></span> High</div></div><div id="landing-hero-map" class="landing-hero-map" aria-label="Nationwide project map"></div></div></section><section id="monitoring" class="portal-stats"><article><b>Live</b><span>Registered project data</span></article><article><b>4</b><span>Authorised phone CCTV slots</span></article><article><b>AI</b><span>Human-reviewed monitoring</span></article><article><b>24×7</b><span>Monitoring support</span></article></section><section id="about" class="portal-info"><div><span class="flag-label">ONE CONNECTED SYSTEM</span><h2>Monitoring that puts people first.</h2><p>Officials can monitor project compliance, conduct inspections, and act on alerts. Registered NGOs and institutes can submit their current project information directly. Beneficiaries can share concerns with the Department.</p></div><div class="info-cards"><article><span>◉</span><b>Live monitoring</b><p>Authorized CCTV, attendance and operational-status oversight.</p></article><article><span>✓</span><b>Fair inspections</b><p>Risk-based, transparent inspection assignments.</p></article><article><span>◎</span><b>Direct grievance access</b><p>Raise issues without depending on the NGO.</p></article></div></section><section id="grievance" class="grievance"><div class="grievance-copy"><span class="flag-label">BENEFICIARY FEEDBACK & GRIEVANCE</span><h2>Your voice matters.</h2><p>Share feedback or a concern about an NGO, project, institute, service, or staff member. Your grievance goes directly to the Department for review.</p><ul><li>You may submit anonymously.</li><li>You will receive a grievance reference number.</li><li>Urgent concerns may trigger a review or surprise inspection.</li></ul></div><form id="feedback-form" class="feedback-form"><h3>Submit feedback</h3><label>Project / NGO / Institute (optional)<input name="ngo" placeholder="Name of project or organisation"></label><label>Type of grievance<select name="category" required><option value="">Select a category</option><option>Service not provided</option><option>Staff misconduct</option><option>Fake attendance / reporting</option><option>Discrimination or harassment</option><option>Other concern</option></select></label><label>Tell us what happened<textarea name="message" placeholder="Write your feedback or grievance here…" required></textarea></label><label class="anonymous"><input type="checkbox" name="anonymous"> Submit anonymously</label><button class="portal-submit">Submit grievance securely</button><p id="feedback-result" class="feedback-result"></p></form></section></main><footer class="portal-footer"><div><b>Saarthi</b> · Smart Real-Time Monitoring & Inspection</div><span>© Department of Social Justice & Empowerment, Government of India</span></footer>`;
   const pl = $('#portal-login'), hl = $('#hero-login');
   if(pl) pl.onclick=showAuth;
   if(hl) hl.onclick=showAuth;
@@ -2304,6 +2414,7 @@ function showLanding(){
     if(anon) anon.innerHTML=`<input type="checkbox" name="anonymous"> Keep my identity hidden from the NGO <small>(DoSJE can still verify this grievance privately.)</small>`;
     feedbackForm.onsubmit=submitFeedback;
   }
+  initLandingHeroMap();
 }
 const readAsDataUrl=file=>new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(file)});
 const hashFile=async file=>{const digest=await crypto.subtle.digest('SHA-256',await file.arrayBuffer());return [...new Uint8Array(digest)].map(byte=>byte.toString(16).padStart(2,'0')).join('')};
@@ -2401,27 +2512,38 @@ if (typeof window.startRelativeTimeTicker === 'function') {
   window.startRelativeTimeTicker();
 }
 initChatbotWidget();
-const mobileCctvParams = new URLSearchParams(location.search || '');
-if (mobileCctvParams.get('mobileCctv')) {
-  showMobileCctvPhone(mobileCctvParams.get('mobileCctv'), mobileCctvParams.get('slot'));
-} else {
-  let user = null;
-  try { user = JSON.parse(sessionStorage.saarthiUser || '{}'); } catch(e){}
-  const path = String(location.pathname || '');
-  const hash = String(location.hash || '');
-  const isNgoRole = user?.role === 'ngo_staff' || user?.role === 'Project / NGO Administrator';
-  const isNgoRoute = path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo';
-
-  if (sessionStorage.saarthiToken && isNgoRole) {
-    showPartnerPortal(user || { name: 'NGO Staff', role: 'ngo_staff' });
-  } else if (sessionStorage.saarthiToken && isNgoRoute) {
-    showToast('Logged in as Official. Opening official dashboard.');
-    load().then(startDashboardSync);
-  } else if (sessionStorage.saarthiToken) {
-    load().then(startDashboardSync);
-  } else if (isNgoRoute) {
-    showPartnerAuth();
+function handleRoute() {
+  const mobileCctvParams = new URLSearchParams(location.search || '');
+  if (mobileCctvParams.get('mobileCctv')) {
+    showMobileCctvPhone(mobileCctvParams.get('mobileCctv'), mobileCctvParams.get('slot'));
   } else {
-    showLanding();
+    let user = null;
+    try { user = JSON.parse(sessionStorage.saarthiUser || '{}'); } catch(e){}
+    const path = String(location.pathname || '');
+    const hash = String(location.hash || '');
+    const isNgoRole = user?.role === 'ngo_staff' || user?.role === 'Project / NGO Administrator';
+    const isNgoRoute = path === '/ngo' || path.startsWith('/ngo/') || hash === '#ngo';
+
+    if (sessionStorage.saarthiToken && isNgoRole) {
+      showPartnerPortal(user || { name: 'NGO Staff', role: 'ngo_staff' });
+    } else if (sessionStorage.saarthiToken && isNgoRoute) {
+      showToast('Logged in as Official. Opening official dashboard.');
+      load().then(startDashboardSync);
+    } else if (sessionStorage.saarthiToken) {
+      load().then(startDashboardSync);
+    } else if (isNgoRoute) {
+      showPartnerAuth();
+    } else {
+      $('#auth-gate')?.remove();
+      $('#partner-portal')?.remove();
+      showLanding();
+    }
   }
+}
+handleRoute();
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('popstate', () => {
+    cleanupLandingMap();
+    handleRoute();
+  });
 }
